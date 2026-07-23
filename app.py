@@ -16,12 +16,13 @@
 
 import os
 import uuid
+import base64
 from pathlib import Path
 from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, render_template, request, url_for
+from flask import Flask, render_template, request, url_for, jsonify
 from gtts import gTTS
 from PIL import Image
 
@@ -97,8 +98,13 @@ Texto original:
 {texto}
 """
 
-MODELO_GEMINI = "gemini-2.5-flash"
+PROMPT_ANALISIS_EN_VIVO = """
+Describe de forma muy breve, clara y directa (máximo 1 o 2 oraciones) 
+lo que ves en este fotograma de cámara en vivo para explicárselo a alguien en voz alta.
+Enfócate en elementos principales como personas, objetos, colores y acciones visibles.
+"""
 
+MODELO_GEMINI = "gemini-2.5-flash"
 
 # ============================================================
 # FUNCIONES (equivalentes a las del notebook)
@@ -116,6 +122,21 @@ def describir_imagen(ruta_imagen: Path, nivel_complejidad: str = "estándar") ->
     )
     return respuesta.text.strip()
 
+def describir_fotograma_en_vivo(imagen_bytes: bytes) -> str:
+    """Analiza un fotograma de cámara en vivo con Gemini."""
+    # Crear el objeto de imagen para Gemini
+    from PIL import Image
+    import io
+    
+    # Convertir bytes a imagen PIL
+    imagen_pil = Image.open(io.BytesIO(imagen_bytes))
+    
+    # Enviar a Gemini con el prompt de análisis en vivo
+    respuesta = gemini_client.models.generate_content(
+        model=MODELO_GEMINI, 
+        contents=[PROMPT_ANALISIS_EN_VIVO, imagen_pil]
+    )
+    return respuesta.text.strip()
 
 def traducir_texto(texto: str, idioma_destino: str) -> str:
     """Traduce un texto usando Gemini."""
@@ -125,11 +146,9 @@ def traducir_texto(texto: str, idioma_destino: str) -> str:
     )
     return respuesta.text.strip()
 
-
 def generar_audio(texto: str, ruta_salida: Path, idioma_gtts: str = "es") -> None:
     """Convierte el texto en un archivo mp3 con gTTS."""
     gTTS(text=texto, lang=idioma_gtts, slow=False).save(str(ruta_salida))
-
 
 def generar_imagen_ia(prompt: str, ruta_salida: Path) -> Path:
     """Genera una imagen gratis con Pollinations.ai."""
@@ -140,7 +159,6 @@ def generar_imagen_ia(prompt: str, ruta_salida: Path) -> Path:
     respuesta.raise_for_status()
     ruta_salida.write_bytes(respuesta.content)
     return ruta_salida
-
 
 def procesar_todo_inclusivo(
     origen: str,
@@ -204,7 +222,6 @@ def procesar_todo_inclusivo(
         "nivel_cognitivo": nivel_cognitivo,
     }
 
-
 # ============================================================
 # RUTAS
 # ============================================================
@@ -220,7 +237,6 @@ def index():
                  "prompt": "Una cocina luminosa con dos personas cocinando juntas, foto realista",
                  "traducir": False},
     )
-
 
 @app.route("/generar", methods=["POST"])
 def generar():
@@ -266,38 +282,36 @@ def generar():
             error=f"No se pudo completar el proceso: {exc}",
             resultado=None, valores=valores,
         )
-@app.route('/analizar-fotograma', methods=['POST'])
-def analizar_fotograma():
-    try:
-        data = request.get_json()
-        image_data = data.get('image', '')
 
+@app.route('/analizar-imagen', methods=['POST'])
+def analizar_imagen():
+    """Analiza un fotograma de cámara en tiempo real."""
+    try:
+        if not GEMINI_API_KEY:
+            return jsonify({'error': 'Gemini no está configurado. Falta GEMINI_API_KEY.'}), 500
+            
+        data = request.get_json()
+        image_data = data.get('imagen', '')
+        
         if not image_data:
             return jsonify({'error': 'No se recibió ninguna imagen'}), 400
-
+        
         # Separar el encabezado base64 de los datos reales
-        header, encoded = image_data.split(',', 1)
+        if ',' in image_data:
+            header, encoded = image_data.split(',', 1)
+        else:
+            encoded = image_data
+            
         image_bytes = base64.b64decode(encoded)
-
-        # Preparar la imagen para el formato que exige Gemini
-        image_part = {
-            "mime_type": "image/jpeg",
-            "data": image_bytes
-        }
-
-        # Prompt estructurado para obtener respuestas cortas y directas
-        prompt = (
-            "Describe de forma muy breve, clara y directa (máximo 1 o 2 oraciones) "
-            "lo que ves en este fotograma de cámara en vivo para explicárselo a alguien en voz alta."
-        )
-
-        response = model.generate_content([prompt, image_part])
-
-        return jsonify({'descripcion': response.text.strip()})
-
+        
+        # Analizar la imagen con Gemini
+        descripcion = describir_fotograma_en_vivo(image_bytes)
+        
+        return jsonify({'descripcion': descripcion})
+        
     except Exception as e:
         print(f"Error en el análisis: {e}")
-        return jsonify({'error': 'Hubo un problema al analizar la imagen.'}), 500
+        return jsonify({'error': f'Hubo un problema al analizar la imagen: {str(e)}'}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
