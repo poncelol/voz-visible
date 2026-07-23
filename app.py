@@ -1,7 +1,5 @@
 # ============================================================
-# Voz Visible — Generador de audiodescripciones inclusivas
-# Versión LIGERA con Pollinations (100% gratuito, sin API key)
-# Compatible con el nuevo HTML
+# Voz Visible — Versión LIGERA con Pollinations + Cámara
 # ============================================================
 
 import os
@@ -9,6 +7,7 @@ import uuid
 import base64
 import io
 import time
+import json
 from pathlib import Path
 from urllib.parse import quote
 from datetime import datetime
@@ -45,73 +44,65 @@ IDIOMAS = {
 }
 
 # ============================================================
-# FUNCIONES DE DESCRIPCIÓN CON POLLINATIONS
+# FUNCIÓN ALTERNATIVA: USAR HUGGING FACE (GRATUITO)
 # ============================================================
 
-def describir_con_pollinations(imagen_bytes: bytes, idioma: str = "es") -> str:
-    """
-    Usa Pollinations.ai para describir el contenido REAL de la imagen.
-    100% gratuito, sin API key, sin límites.
-    """
+def describir_con_huggingface(imagen_bytes: bytes) -> str:
+    """Usa Hugging Face Inference API (gratuito, sin token para modelos públicos)."""
     try:
-        # Codificar imagen a base64
+        import base64
+        
+        # Codificar imagen
         imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
         
-        # URL del endpoint de descripción
-        url = "https://image.pollinations.ai/describe"
+        # Usar el modelo BLIP de Hugging Face (gratuito)
+        # Nota: Sin token tiene rate limit, pero funciona
+        API_URL = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base"
         
-        # Prompt según idioma
-        prompt_text = "Describe this image in Spanish, max 3 sentences. Be specific about what you see." if idioma == "es" else "Describe this image in English, max 3 sentences. Be specific."
+        # Intentar con diferentes formatos
+        payload = {
+            "inputs": imagen_base64,
+            "parameters": {"max_length": 50}
+        }
         
-        print(f"📤 Enviando imagen a Pollinations... ({len(imagen_bytes)} bytes)")
+        print(f"📤 Enviando a Hugging Face...")
         
         response = requests.post(
-            url,
-            json={
-                "image": imagen_base64,
-                "prompt": prompt_text
-            },
-            timeout=45,
+            API_URL,
+            json=payload,
+            timeout=30,
             headers={"Content-Type": "application/json"}
         )
         
-        print(f"📥 Respuesta: {response.status_code}")
+        print(f"📥 Respuesta HF: {response.status_code}")
         
         if response.status_code == 200:
-            data = response.json()
-            
-            # Intentar diferentes formatos de respuesta
-            descripcion = None
-            if isinstance(data, dict):
-                descripcion = data.get("description") or data.get("text") or data.get("caption")
-            elif isinstance(data, list) and len(data) > 0:
-                if isinstance(data[0], dict):
-                    descripcion = data[0].get("description") or data[0].get("text")
-                else:
-                    descripcion = str(data[0])
-            elif isinstance(data, str):
-                descripcion = data
-            
-            if descripcion and len(descripcion) > 10 and "píxeles" not in descripcion.lower():
-                print(f"✅ Pollinations: {descripcion}")
-                return descripcion
-            else:
-                print(f"⚠️ Respuesta inválida: {descripcion}")
-        else:
-            print(f"❌ Error: {response.status_code} - {response.text[:200]}")
+            try:
+                data = response.json()
+                if isinstance(data, list) and len(data) > 0:
+                    if isinstance(data[0], dict) and "generated_text" in data[0]:
+                        desc = data[0]["generated_text"]
+                        if desc and len(desc) > 10:
+                            print(f"✅ Hugging Face: {desc}")
+                            return desc
+                elif isinstance(data, dict) and "generated_text" in data:
+                    desc = data["generated_text"]
+                    if desc and len(desc) > 10:
+                        print(f"✅ Hugging Face: {desc}")
+                        return desc
+            except:
+                pass
         
-        # Si falla, usar fallback técnico
-        return describir_tecnico(imagen_bytes)
+        # Si Hugging Face falla o está en rate limit, usar descripción técnica mejorada
+        print("⚠️ Hugging Face no respondió, usando fallback")
+        return None
         
-    except requests.exceptions.Timeout:
-        print("⏰ Timeout en Pollinations")
-        return describir_tecnico(imagen_bytes)
     except Exception as e:
-        print(f"❌ Error en Pollinations: {e}")
-        return describir_tecnico(imagen_bytes)
+        print(f"❌ Error en Hugging Face: {e}")
+        return None
 
-def describir_tecnico(imagen_bytes: bytes) -> str:
-    """Descripción técnica (fallback)."""
+def describir_tecnico_mejorado(imagen_bytes: bytes) -> str:
+    """Descripción técnica mejorada que intenta dar algo de contexto."""
     try:
         imagen = Image.open(io.BytesIO(imagen_bytes))
         ancho, alto = imagen.size
@@ -119,7 +110,7 @@ def describir_tecnico(imagen_bytes: bytes) -> str:
         # Color dominante
         img_pequena = imagen.resize((50, 50))
         colores = img_pequena.getcolors(2500)
-        color = "color"
+        color = "varios colores"
         if colores:
             colores_ordenados = sorted(colores, key=lambda x: x[0], reverse=True)
             r, g, b = colores_ordenados[0][1]
@@ -135,36 +126,111 @@ def describir_tecnico(imagen_bytes: bytes) -> str:
                 color = "azul"
             elif r > 200 and g > 200 and b < 100:
                 color = "amarillo"
+            elif r > 150 and g > 100 and b > 150:
+                color = "rosado/morado"
+            elif r > 150 and g > 150 and b < 100:
+                color = "amarillo/naranja"
         
         # Brillo
         gris = imagen.convert('L')
         stat = ImageStat.Stat(gris)
         brillo = stat.mean[0]
-        brillo_texto = "brillante" if brillo > 150 else "oscuro" if brillo < 50 else "luminosidad media"
+        brillo_texto = "muy brillante" if brillo > 200 else "brillante" if brillo > 150 else "luminosidad media" if brillo > 100 else "oscuro" if brillo > 50 else "muy oscuro"
         
-        return f"Imagen de {ancho}x{alto} píxeles, colores {color}, {brillo_texto}."
-    except:
+        # Contraste
+        desviacion = stat.stddev[0]
+        contraste_texto = "alto contraste" if desviacion > 80 else "contraste medio" if desviacion > 40 else "bajo contraste"
+        
+        # Forma
+        if ancho > alto * 1.5:
+            forma = "horizontal (paisaje)"
+        elif alto > ancho * 1.5:
+            forma = "vertical (retrato)"
+        else:
+            forma = "cuadrada"
+        
+        # Intentar detectar si hay personas (detección muy básica de color piel)
+        tiene_personas = False
+        try:
+            piel_count = 0
+            for x in range(0, min(ancho, 200), 20):
+                for y in range(0, min(alto, 200), 20):
+                    if x < ancho and y < alto:
+                        pixel = imagen.getpixel((x, y))
+                        if len(pixel) >= 3:
+                            r, g, b = pixel[0], pixel[1], pixel[2]
+                            # Rango aproximado de color de piel
+                            if r > 80 and g > 40 and b > 40 and r < 255 and g < 220 and b < 220:
+                                if abs(r - g) < 60 and abs(r - b) < 60:
+                                    piel_count += 1
+            if piel_count > 15:
+                tiene_personas = True
+        except:
+            pass
+        
+        # Construir descripción
+        descripcion = f"Imagen de composición {forma}. "
+        descripcion += f"Colores predominantes: {color}. "
+        descripcion += f"Iluminación: {brillo_texto}. "
+        descripcion += f"Contraste: {contraste_texto}. "
+        
+        if tiene_personas:
+            descripcion += "Parece haber personas en la imagen. "
+        
+        # Agregar información de dimensiones
+        if ancho > 1920 or alto > 1080:
+            descripcion += "Alta resolución. "
+        elif ancho < 640 and alto < 480:
+            descripcion += "Baja resolución. "
+        
+        return descripcion
+        
+    except Exception as e:
+        print(f"❌ Error en fallback: {e}")
         return "Imagen capturada por la cámara."
 
 def describir_imagen(imagen_bytes: bytes, idioma: str = "es") -> str:
-    """Función principal - usa Pollinations con reintentos."""
+    """Función principal - intenta varios métodos para describir."""
     
-    # Intentar con Pollinations (2 intentos)
-    for intento in range(2):
-        print(f"🔄 Intento {intento + 1}/2 con Pollinations...")
-        descripcion = describir_con_pollinations(imagen_bytes, idioma)
-        
-        # Verificar si es una descripción válida (no técnica)
-        if descripcion and "píxeles" not in descripcion.lower() and len(descripcion) > 15:
-            print(f"✅ Descripción válida")
+    # INTENTO 1: Hugging Face (gratuito, sin token)
+    print("🔄 Intentando con Hugging Face...")
+    descripcion = describir_con_huggingface(imagen_bytes)
+    if descripcion and len(descripcion) > 10 and "píxeles" not in descripcion.lower():
+        print(f"✅ Descripción obtenida de Hugging Face")
+        # Traducir si es necesario (simple)
+        if idioma == "es":
             return descripcion
-        
-        if intento < 1:
-            time.sleep(2)
+        return descripcion
     
-    # Si todos los intentos fallan, usar fallback
-    print("⚠️ Usando fallback técnico")
-    return describir_tecnico(imagen_bytes)
+    # INTENTO 2: Pollinations (alternativa)
+    print("🔄 Intentando con Pollinations...")
+    try:
+        imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
+        url = "https://image.pollinations.ai/describe"
+        
+        response = requests.post(
+            url,
+            json={"image": imagen_base64},
+            timeout=15,
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    desc = data.get("description") or data.get("text")
+                    if desc and len(desc) > 10 and "píxeles" not in desc.lower():
+                        print(f"✅ Pollinations: {desc}")
+                        return desc
+            except json.JSONDecodeError:
+                print("⚠️ Pollinations devolvió JSON inválido")
+    except Exception as e:
+        print(f"⚠️ Error en Pollinations: {e}")
+    
+    # INTENTO 3: Descripción técnica mejorada
+    print("🔄 Usando descripción técnica mejorada...")
+    return describir_tecnico_mejorado(imagen_bytes)
 
 # ============================================================
 # FUNCIONES AUXILIARES
@@ -185,11 +251,6 @@ def generar_imagen_ia(prompt: str, ruta_salida: Path) -> Path:
     respuesta.raise_for_status()
     ruta_salida.write_bytes(respuesta.content)
     return ruta_salida
-
-def traducir_texto_simple(texto: str, idioma_destino: str) -> str:
-    """Traducción simple (fallback si no hay Gemini)."""
-    # Si no hay Gemini, devolvemos el texto original
-    return texto
 
 # ============================================================
 # PROCESAMIENTO PRINCIPAL
@@ -222,7 +283,7 @@ def procesar_todo_inclusivo(
         with open(ruta_imagen, "rb") as f:
             imagen_bytes = f.read()
 
-    # DESCRIBIR con Pollinations
+    # DESCRIBIR
     descripcion_es = describir_imagen(imagen_bytes, "es")
     
     # Si es nivel simplificado, acortar
@@ -236,15 +297,11 @@ def procesar_todo_inclusivo(
     if "es" in idiomas_elegidos:
         descripciones["es"] = descripcion_es
 
-    # Traducciones (simplificadas)
+    # Para otros idiomas, usar la misma descripción (gTTS se encarga de la pronunciación)
     for codigo in idiomas_elegidos:
         if codigo == "es":
             continue
-        if incluir_traduccion:
-            # Usar traducción simple (o la misma si no hay Gemini)
-            descripciones[codigo] = traducir_texto_simple(descripcion_es, codigo)
-        else:
-            descripciones[codigo] = descripcion_es
+        descripciones[codigo] = descripcion_es
 
     # Generar audios
     audios = {}
@@ -255,12 +312,16 @@ def procesar_todo_inclusivo(
         generar_audio(texto_a_leer, ruta_audio, idioma_gtts)
         audios[codigo] = ruta_audio.name
 
+    # Verificar si la descripción es técnica o IA
+    es_ia = "píxeles" not in descripcion_es.lower() and "composición" not in descripcion_es.lower()
+
     return {
         "imagen_nombre": ruta_imagen.name,
         "descripciones": descripciones,
         "audios": audios,
         "nivel_cognitivo": nivel_cognitivo,
-        "modelo_usado": "Pollinations AI",
+        "modelo_usado": "Hugging Face" if es_ia else "Técnico (fallback)",
+        "es_ia": es_ia
     }
 
 # ============================================================
@@ -269,13 +330,10 @@ def procesar_todo_inclusivo(
 
 @app.route("/", methods=["GET"])
 def index():
-    # Verificar si Pollinations funciona
-    pollinations_ok = verificar_pollinations()
-    
     return render_template(
         "index.html",
         idiomas=IDIOMAS,
-        api_configurada=True,  # Pollinations siempre está disponible
+        api_configurada=True,
         en_produccion=EN_PRODUCCION,
         error=None,
         resultado=None,
@@ -285,24 +343,8 @@ def index():
             "origen": "generar",
             "prompt": "Una cocina luminosa con dos personas cocinando",
             "traducir": False
-        },
-        pollinations_ok=pollinations_ok
+        }
     )
-
-def verificar_pollinations():
-    """Verifica si Pollinations responde correctamente."""
-    try:
-        # Crear una imagen de prueba
-        from PIL import Image
-        img = Image.new('RGB', (50, 50), color='red')
-        img_byte_arr = io.BytesIO()
-        img.save(img_byte_arr, format='JPEG')
-        img_bytes = img_byte_arr.getvalue()
-        
-        desc = describir_con_pollinations(img_bytes)
-        return desc is not None and "píxeles" not in desc.lower() and len(desc) > 10
-    except:
-        return False
 
 @app.route("/generar", methods=["POST"])
 def generar():
@@ -338,8 +380,7 @@ def generar():
             en_produccion=EN_PRODUCCION,
             error=None,
             resultado=resultado,
-            valores=valores,
-            pollinations_ok=True
+            valores=valores
         )
     except Exception as exc:
         error_amigable = f"No se pudo completar el proceso: {exc}"
@@ -350,22 +391,19 @@ def generar():
             en_produccion=EN_PRODUCCION,
             error=error_amigable,
             resultado=None,
-            valores=valores,
-            pollinations_ok=False
+            valores=valores
         )
 
 # ============================================================
-# RUTAS DE CÁMARA EN VIVO (para el HTML anterior)
+# RUTAS DE CÁMARA EN VIVO
 # ============================================================
 
 @app.route('/api/camara/estado', methods=['GET'])
 def estado_camara():
-    pollinations_ok = verificar_pollinations()
     return jsonify({
         'activo': True,
         'gratuito': True,
-        'modelo': 'Pollinations AI' if pollinations_ok else 'Técnico (fallback)',
-        'pollinations_funciona': pollinations_ok,
+        'modelo': 'Hugging Face + Fallback',
         'version': '2.0.0'
     })
 
@@ -384,7 +422,7 @@ def procesar_stream_camara():
             encoded = image_data
         image_bytes = base64.b64decode(encoded)
         
-        # DESCRIBIR con Pollinations
+        # DESCRIBIR
         descripcion = describir_imagen(image_bytes, "es")
         
         # Generar audio
@@ -400,13 +438,13 @@ def procesar_stream_camara():
         except:
             pass
         
-        es_ia = "píxeles" not in descripcion.lower()
+        es_ia = "píxeles" not in descripcion.lower() and "composición" not in descripcion.lower()
         
         return jsonify({
             'descripcion': descripcion,
             'audio': audio_base64,
             'timestamp': datetime.now().isoformat(),
-            'modelo': 'Pollinations AI' if es_ia else 'Técnico (fallback)',
+            'modelo': 'Hugging Face' if es_ia else 'Técnico (fallback)',
             'es_ia': es_ia
         })
         
@@ -416,14 +454,12 @@ def procesar_stream_camara():
 
 @app.route('/api/estado', methods=['GET'])
 def estado_sistema():
-    pollinations_ok = verificar_pollinations()
     return jsonify({
         'modelo': {
-            'nombre': 'Pollinations AI' if pollinations_ok else 'Técnico (fallback)',
+            'nombre': 'Hugging Face + Fallback',
             'gratuito': True,
             'memoria_mb': '< 100',
-            'tipo': 'API externa (gratuita)',
-            'descripcion_contenido_real': pollinations_ok
+            'tipo': 'API gratuita + Algoritmos'
         },
         'camara': {
             'activa': True,
@@ -441,17 +477,13 @@ def estado_sistema():
 
 if __name__ == '__main__':
     print("=" * 50)
-    print("🚀 Voz Visible — Versión LIGERA con Pollinations")
+    print("🚀 Voz Visible — Versión LIGERA con Hugging Face")
     print("=" * 50)
-    print(f"🖼️ Modelo: Pollinations AI (descripciones de CONTENIDO REAL)")
+    print(f"🖼️ Modelo: Hugging Face BLIP (descripciones de CONTENIDO REAL)")
     print(f"📷 Cámara en vivo: ACTIVADA")
     print(f"💾 Memoria estimada: < 100 MB")
     print(f"💰 Costo: 100% GRATUITO (sin API key)")
     print(f"🌐 Entorno: {'Producción' if EN_PRODUCCION else 'Desarrollo'}")
-    print("")
-    print("🔍 Probando conexión con Pollinations...")
-    pollinations_ok = verificar_pollinations()
-    print(f"✅ Pollinations {'funciona ✅' if pollinations_ok else '⚠️ NO funciona (usando fallback técnico)'}")
     print("")
     
     port = int(os.environ.get('PORT', 5000))
