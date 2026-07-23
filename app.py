@@ -34,7 +34,7 @@ EN_PRODUCCION = os.environ.get('RENDER') == 'true'
 # CONFIGURACIÓN GROQ (100% GRATUITO)
 # ============================================================
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODELO = "llama-3.2-11b-vision"  # ✅ MODELO ACTUAL - JULIO 2026 (Producción)
+GROQ_MODELO = "qwen/qwen3.6-27b"  # ✅ ÚNICO MODELO DE VISIÓN DISPONIBLE EN JULIO 2026
 
 # ============================================================
 # IDIOMAS
