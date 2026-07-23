@@ -266,7 +266,38 @@ def generar():
             error=f"No se pudo completar el proceso: {exc}",
             resultado=None, valores=valores,
         )
+@app.route('/analizar-fotograma', methods=['POST'])
+def analizar_fotograma():
+    try:
+        data = request.get_json()
+        image_data = data.get('image', '')
 
+        if not image_data:
+            return jsonify({'error': 'No se recibió ninguna imagen'}), 400
 
-if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+        # Separar el encabezado base64 de los datos reales
+        header, encoded = image_data.split(',', 1)
+        image_bytes = base64.b64decode(encoded)
+
+        # Preparar la imagen para el formato que exige Gemini
+        image_part = {
+            "mime_type": "image/jpeg",
+            "data": image_bytes
+        }
+
+        # Prompt estructurado para obtener respuestas cortas y directas
+        prompt = (
+            "Describe de forma muy breve, clara y directa (máximo 1 o 2 oraciones) "
+            "lo que ves en este fotograma de cámara en vivo para explicárselo a alguien en voz alta."
+        )
+
+        response = model.generate_content([prompt, image_part])
+
+        return jsonify({'descripcion': response.text.strip()})
+
+    except Exception as e:
+        print(f"Error en el análisis: {e}")
+        return jsonify({'error': 'Hubo un problema al analizar la imagen.'}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
