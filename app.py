@@ -112,7 +112,7 @@ Enfócate en elementos principales como personas, objetos, colores y acciones vi
 Responde SOLO con la descripción, sin introducciones ni explicaciones adicionales.
 """
 
-MODELO_GEMINI = "gemini-1.5-flash"
+MODELO_GEMINI = "gemini-2.5-flash"
 MODELO_DEEPSEEK = "deepseek-vl2"  # Modelo de DeepSeek con visión
 
 # ============================================================
