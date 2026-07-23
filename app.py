@@ -1,23 +1,22 @@
 # ============================================================
-# Voz Visible — Versión LIGERA con Pollinations + Cámara
+# Voz Visible — Versión con Hugging Face API
+# 100% gratuito, sin PyTorch, < 100 MB RAM
 # ============================================================
 
 import os
 import uuid
 import base64
 import io
-import time
-import json
 from pathlib import Path
 from urllib.parse import quote
 from datetime import datetime
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List
 
 import requests
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, url_for, jsonify
 from gtts import gTTS
-from PIL import Image, ImageStat, ImageFilter
+from PIL import Image, ImageStat
 
 load_dotenv()
 
@@ -44,25 +43,33 @@ IDIOMAS = {
 }
 
 # ============================================================
-# FUNCIÓN ALTERNATIVA: USAR HUGGING FACE (GRATUITO)
+# FUNCIÓN PARA DESCRIBIR CON HUGGING FACE (GRATIS)
 # ============================================================
 
 def describir_con_huggingface(imagen_bytes: bytes) -> str:
-    """Usa Hugging Face Inference API (gratuito, sin token para modelos públicos)."""
+    """
+    Usa Hugging Face Inference API (gratuito, sin API key).
+    Modelo: BLIP-base (descripciones de contenido REAL)
+    """
     try:
-        import base64
-        
-        # Codificar imagen
+        # Codificar imagen a base64
         imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
         
-        # Usar el modelo BLIP de Hugging Face (gratuito)
-        # Nota: Sin token tiene rate limit, pero funciona
+        # API de Hugging Face (gratuita, sin token para modelos públicos)
+        # Usamos BLIP que describe contenido real
         API_URL = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base"
         
-        # Intentar con diferentes formatos
+        headers = {
+            "Content-Type": "application/json"
+            # No necesitas token para modelos públicos con rate limit
+        }
+        
         payload = {
             "inputs": imagen_base64,
-            "parameters": {"max_length": 50}
+            "parameters": {
+                "max_length": 50,
+                "num_beams": 4
+            }
         }
         
         print(f"📤 Enviando a Hugging Face...")
@@ -70,39 +77,58 @@ def describir_con_huggingface(imagen_bytes: bytes) -> str:
         response = requests.post(
             API_URL,
             json=payload,
-            timeout=30,
-            headers={"Content-Type": "application/json"}
+            headers=headers,
+            timeout=30
         )
         
-        print(f"📥 Respuesta HF: {response.status_code}")
+        print(f"📥 Respuesta: {response.status_code}")
         
         if response.status_code == 200:
-            try:
+            data = response.json()
+            
+            # Procesar respuesta
+            if isinstance(data, list) and len(data) > 0:
+                if isinstance(data[0], dict) and "generated_text" in data[0]:
+                    descripcion = data[0]["generated_text"]
+                    if descripcion and len(descripcion) > 10:
+                        print(f"✅ Hugging Face: {descripcion}")
+                        return descripcion
+            elif isinstance(data, dict) and "generated_text" in data:
+                descripcion = data["generated_text"]
+                if descripcion and len(descripcion) > 10:
+                    print(f"✅ Hugging Face: {descripcion}")
+                    return descripcion
+        
+        # Si el rate limit está activo (429), esperar y reintentar
+        if response.status_code == 429:
+            print("⏳ Rate limit de Hugging Face, esperando...")
+            time.sleep(3)
+            # Reintentar una vez
+            response = requests.post(API_URL, json=payload, headers=headers, timeout=30)
+            if response.status_code == 200:
                 data = response.json()
                 if isinstance(data, list) and len(data) > 0:
                     if isinstance(data[0], dict) and "generated_text" in data[0]:
-                        desc = data[0]["generated_text"]
-                        if desc and len(desc) > 10:
-                            print(f"✅ Hugging Face: {desc}")
-                            return desc
-                elif isinstance(data, dict) and "generated_text" in data:
-                    desc = data["generated_text"]
-                    if desc and len(desc) > 10:
-                        print(f"✅ Hugging Face: {desc}")
-                        return desc
-            except:
-                pass
+                        descripcion = data[0]["generated_text"]
+                        if descripcion and len(descripcion) > 10:
+                            return descripcion
         
-        # Si Hugging Face falla o está en rate limit, usar descripción técnica mejorada
-        print("⚠️ Hugging Face no respondió, usando fallback")
+        print("⚠️ Hugging Face no respondió correctamente")
         return None
         
+    except requests.exceptions.Timeout:
+        print("⏰ Timeout en Hugging Face")
+        return None
     except Exception as e:
         print(f"❌ Error en Hugging Face: {e}")
         return None
 
-def describir_tecnico_mejorado(imagen_bytes: bytes) -> str:
-    """Descripción técnica mejorada que intenta dar algo de contexto."""
+# ============================================================
+# DESCRIPCIÓN TÉCNICA (FALLBACK)
+# ============================================================
+
+def describir_tecnico(imagen_bytes: bytes) -> str:
+    """Descripción técnica (fallback cuando la API falla)."""
     try:
         imagen = Image.open(io.BytesIO(imagen_bytes))
         ancho, alto = imagen.size
@@ -126,111 +152,50 @@ def describir_tecnico_mejorado(imagen_bytes: bytes) -> str:
                 color = "azul"
             elif r > 200 and g > 200 and b < 100:
                 color = "amarillo"
-            elif r > 150 and g > 100 and b > 150:
-                color = "rosado/morado"
-            elif r > 150 and g > 150 and b < 100:
-                color = "amarillo/naranja"
         
         # Brillo
         gris = imagen.convert('L')
         stat = ImageStat.Stat(gris)
         brillo = stat.mean[0]
-        brillo_texto = "muy brillante" if brillo > 200 else "brillante" if brillo > 150 else "luminosidad media" if brillo > 100 else "oscuro" if brillo > 50 else "muy oscuro"
-        
-        # Contraste
-        desviacion = stat.stddev[0]
-        contraste_texto = "alto contraste" if desviacion > 80 else "contraste medio" if desviacion > 40 else "bajo contraste"
+        if brillo > 200:
+            brillo_texto = "muy brillante"
+        elif brillo > 150:
+            brillo_texto = "brillante"
+        elif brillo > 100:
+            brillo_texto = "luminosidad media"
+        elif brillo > 50:
+            brillo_texto = "oscuro"
+        else:
+            brillo_texto = "muy oscuro"
         
         # Forma
         if ancho > alto * 1.5:
-            forma = "horizontal (paisaje)"
+            forma = "horizontal"
         elif alto > ancho * 1.5:
-            forma = "vertical (retrato)"
+            forma = "vertical"
         else:
             forma = "cuadrada"
         
-        # Intentar detectar si hay personas (detección muy básica de color piel)
-        tiene_personas = False
-        try:
-            piel_count = 0
-            for x in range(0, min(ancho, 200), 20):
-                for y in range(0, min(alto, 200), 20):
-                    if x < ancho and y < alto:
-                        pixel = imagen.getpixel((x, y))
-                        if len(pixel) >= 3:
-                            r, g, b = pixel[0], pixel[1], pixel[2]
-                            # Rango aproximado de color de piel
-                            if r > 80 and g > 40 and b > 40 and r < 255 and g < 220 and b < 220:
-                                if abs(r - g) < 60 and abs(r - b) < 60:
-                                    piel_count += 1
-            if piel_count > 15:
-                tiene_personas = True
-        except:
-            pass
+        return f"Imagen {forma}, colores {color}, {brillo_texto}."
         
-        # Construir descripción
-        descripcion = f"Imagen de composición {forma}. "
-        descripcion += f"Colores predominantes: {color}. "
-        descripcion += f"Iluminación: {brillo_texto}. "
-        descripcion += f"Contraste: {contraste_texto}. "
-        
-        if tiene_personas:
-            descripcion += "Parece haber personas en la imagen. "
-        
-        # Agregar información de dimensiones
-        if ancho > 1920 or alto > 1080:
-            descripcion += "Alta resolución. "
-        elif ancho < 640 and alto < 480:
-            descripcion += "Baja resolución. "
-        
-        return descripcion
-        
-    except Exception as e:
-        print(f"❌ Error en fallback: {e}")
+    except:
         return "Imagen capturada por la cámara."
 
-def describir_imagen(imagen_bytes: bytes, idioma: str = "es") -> str:
-    """Función principal - intenta varios métodos para describir."""
+# ============================================================
+# FUNCIÓN PRINCIPAL DE DESCRIPCIÓN
+# ============================================================
+
+def describir_imagen(imagen_bytes: bytes) -> str:
+    """Intenta con Hugging Face primero, luego fallback."""
     
-    # INTENTO 1: Hugging Face (gratuito, sin token)
-    print("🔄 Intentando con Hugging Face...")
+    # Intentar con Hugging Face
     descripcion = describir_con_huggingface(imagen_bytes)
-    if descripcion and len(descripcion) > 10 and "píxeles" not in descripcion.lower():
-        print(f"✅ Descripción obtenida de Hugging Face")
-        # Traducir si es necesario (simple)
-        if idioma == "es":
-            return descripcion
+    if descripcion:
         return descripcion
     
-    # INTENTO 2: Pollinations (alternativa)
-    print("🔄 Intentando con Pollinations...")
-    try:
-        imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
-        url = "https://image.pollinations.ai/describe"
-        
-        response = requests.post(
-            url,
-            json={"image": imagen_base64},
-            timeout=15,
-            headers={"Content-Type": "application/json"}
-        )
-        
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                if isinstance(data, dict):
-                    desc = data.get("description") or data.get("text")
-                    if desc and len(desc) > 10 and "píxeles" not in desc.lower():
-                        print(f"✅ Pollinations: {desc}")
-                        return desc
-            except json.JSONDecodeError:
-                print("⚠️ Pollinations devolvió JSON inválido")
-    except Exception as e:
-        print(f"⚠️ Error en Pollinations: {e}")
-    
-    # INTENTO 3: Descripción técnica mejorada
-    print("🔄 Usando descripción técnica mejorada...")
-    return describir_tecnico_mejorado(imagen_bytes)
+    # Fallback técnico
+    print("⚠️ Usando fallback técnico")
+    return describir_tecnico(imagen_bytes)
 
 # ============================================================
 # FUNCIONES AUXILIARES
@@ -284,7 +249,7 @@ def procesar_todo_inclusivo(
             imagen_bytes = f.read()
 
     # DESCRIBIR
-    descripcion_es = describir_imagen(imagen_bytes, "es")
+    descripcion_es = describir_imagen(imagen_bytes)
     
     # Si es nivel simplificado, acortar
     if nivel_cognitivo == "simplificada":
@@ -297,7 +262,6 @@ def procesar_todo_inclusivo(
     if "es" in idiomas_elegidos:
         descripciones["es"] = descripcion_es
 
-    # Para otros idiomas, usar la misma descripción (gTTS se encarga de la pronunciación)
     for codigo in idiomas_elegidos:
         if codigo == "es":
             continue
@@ -312,7 +276,6 @@ def procesar_todo_inclusivo(
         generar_audio(texto_a_leer, ruta_audio, idioma_gtts)
         audios[codigo] = ruta_audio.name
 
-    # Verificar si la descripción es técnica o IA
     es_ia = "píxeles" not in descripcion_es.lower() and "composición" not in descripcion_es.lower()
 
     return {
@@ -320,7 +283,7 @@ def procesar_todo_inclusivo(
         "descripciones": descripciones,
         "audios": audios,
         "nivel_cognitivo": nivel_cognitivo,
-        "modelo_usado": "Hugging Face" if es_ia else "Técnico (fallback)",
+        "modelo_usado": "Hugging Face API" if es_ia else "Técnico (fallback)",
         "es_ia": es_ia
     }
 
@@ -383,19 +346,18 @@ def generar():
             valores=valores
         )
     except Exception as exc:
-        error_amigable = f"No se pudo completar el proceso: {exc}"
         return render_template(
             "index.html",
             idiomas=IDIOMAS,
             api_configurada=True,
             en_produccion=EN_PRODUCCION,
-            error=error_amigable,
+            error=str(exc),
             resultado=None,
             valores=valores
         )
 
 # ============================================================
-# RUTAS DE CÁMARA EN VIVO
+# RUTAS DE CÁMARA
 # ============================================================
 
 @app.route('/api/camara/estado', methods=['GET'])
@@ -403,7 +365,7 @@ def estado_camara():
     return jsonify({
         'activo': True,
         'gratuito': True,
-        'modelo': 'Hugging Face + Fallback',
+        'modelo': 'Hugging Face API',
         'version': '2.0.0'
     })
 
@@ -423,7 +385,7 @@ def procesar_stream_camara():
         image_bytes = base64.b64decode(encoded)
         
         # DESCRIBIR
-        descripcion = describir_imagen(image_bytes, "es")
+        descripcion = describir_imagen(image_bytes)
         
         # Generar audio
         session_id = uuid.uuid4().hex[:8]
@@ -456,10 +418,10 @@ def procesar_stream_camara():
 def estado_sistema():
     return jsonify({
         'modelo': {
-            'nombre': 'Hugging Face + Fallback',
+            'nombre': 'Hugging Face API',
             'gratuito': True,
             'memoria_mb': '< 100',
-            'tipo': 'API gratuita + Algoritmos'
+            'tipo': 'API externa (gratuita)'
         },
         'camara': {
             'activa': True,
@@ -477,7 +439,7 @@ def estado_sistema():
 
 if __name__ == '__main__':
     print("=" * 50)
-    print("🚀 Voz Visible — Versión LIGERA con Hugging Face")
+    print("🚀 Voz Visible — Versión Hugging Face API")
     print("=" * 50)
     print(f"🖼️ Modelo: Hugging Face BLIP (descripciones de CONTENIDO REAL)")
     print(f"📷 Cámara en vivo: ACTIVADA")

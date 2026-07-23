@@ -66,15 +66,18 @@
   }
 
   // ============================================================
-  // 4. CÁMARA EN VIVO CON DEEPSEEK VL
+  // 4. CÁMARA EN VIVO (CORREGIDO PARA TU HTML)
   // ============================================================
-  var video = document.getElementById("webcam");
-  var canvas = document.getElementById("canvas");
-  var btnStart = document.getElementById("btnStart");
-  var btnStop = document.getElementById("btnStop");
-  var statusDot = document.getElementById("statusDot");
-  var statusText = document.getElementById("statusText");
-  var descripcionText = document.getElementById("descripcionText");
+  var video = document.getElementById("videoCamara");
+  var canvas = document.getElementById("canvasCamara");
+  var btnStart = document.getElementById("btnIniciarCamara");
+  var btnStop = document.getElementById("btnDetenerCamara");
+  var btnCapturar = document.getElementById("btnCapturarCamara");
+  var statusCamara = document.getElementById("statusCamara");
+  var descripcionCamara = document.getElementById("descripcionCamara");
+  var audioContainer = document.getElementById("audioCamaraContainer");
+  var audioPlayer = document.getElementById("audioCamara");
+  var modeloCamara = document.getElementById("modeloCamara");
 
   // Si no existen los elementos de cámara, salimos
   if (!video || !btnStart || !btnStop) {
@@ -91,22 +94,31 @@
   // 4.1 FUNCIONES DE ESTADO
   // ============================================================
   function setStatus(active, message) {
-    if (statusDot) {
-      statusDot.className = "dot " + (active ? "active" : "inactive");
-    }
-    if (statusText) {
-      statusText.textContent = message || (active ? "Sistema activo" : "Sistema inactivo");
+    if (statusCamara) {
+      if (active) {
+        statusCamara.className = "status-badge status-active";
+        statusCamara.textContent = message || "🟢 Activa";
+      } else {
+        statusCamara.className = "status-badge status-inactive";
+        statusCamara.textContent = message || "⚪ Inactiva";
+      }
     }
   }
 
   function setDescripcion(texto) {
-    if (descripcionText) {
-      descripcionText.textContent = texto;
+    if (descripcionCamara) {
+      descripcionCamara.innerHTML = `<p>${texto}</p>`;
+    }
+  }
+
+  function setModelo(texto, esIA) {
+    if (modeloCamara) {
+      modeloCamara.textContent = texto;
     }
   }
 
   // ============================================================
-  // 4.2 CAPTURAR Y PROCESAR IMAGEN (MODO RÁPIDO)
+  // 4.2 CAPTURAR Y PROCESAR IMAGEN
   // ============================================================
   function captureAndProcess() {
     if (!isRunning || analizando) return;
@@ -121,20 +133,18 @@
       var ctx = canvas.getContext("2d");
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // Generar la imagen en base64 con formato JPEG
+      // Generar la imagen en base64
       var imageData = canvas.toDataURL("image/jpeg", 0.8);
 
       // Enviar al servidor
-      fetch("/analizar-camara", {
+      fetch("/api/camara/stream", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          imagen: imageData,
-          detalle: false
+          imagen: imageData
         }),
-        // Timeout de 15 segundos
         signal: AbortSignal.timeout(15000)
       })
       .then(function(response) {
@@ -150,10 +160,31 @@
         if (data.error) {
           console.error("Error del servidor:", data.mensaje);
           setDescripcion("⚠️ " + data.mensaje);
-          setStatus(false, "Error: " + data.mensaje);
+          setStatus(false, "Error");
+          setModelo("Error", false);
         } else if (data.descripcion) {
           setDescripcion(data.descripcion);
           setStatus(true, "✅ Analizado correctamente");
+          
+          // Mostrar modelo usado
+          if (data.modelo) {
+            setModelo(data.modelo, data.es_ia);
+          } else if (data.es_ia) {
+            setModelo("🧠 IA activa", true);
+          } else {
+            setModelo("⚠️ Modo técnico", false);
+          }
+          
+          // Reproducir audio si existe
+          if (data.audio && audioContainer && audioPlayer) {
+            audioContainer.style.display = "block";
+            var audioBlob = base64ToBlob(data.audio, "audio/mp3");
+            var audioUrl = URL.createObjectURL(audioBlob);
+            audioPlayer.src = audioUrl;
+            audioPlayer.play().catch(function(e) {
+              console.warn("Error al reproducir audio:", e);
+            });
+          }
         } else {
           setDescripcion("⚠️ No se recibió descripción");
           setStatus(false, "Respuesta vacía");
@@ -179,118 +210,23 @@
     }
   }
 
-  // ============================================================
-  // 4.3 ANÁLISIS DETALLADO (MODO DETALLADO)
-  // ============================================================
-  function captureAndProcessDetailed() {
-    if (!isRunning || analizando) return;
-
-    analizando = true;
-    setStatus(true, "🔬 Analizando en detalle...");
-
-    try {
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      var ctx = canvas.getContext("2d");
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      var imageData = canvas.toDataURL("image/jpeg", 0.8);
-
-      fetch("/analizar-camara", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          imagen: imageData,
-          detalle: true
-        }),
-        signal: AbortSignal.timeout(20000)
-      })
-      .then(function(response) {
-        if (!response.ok) {
-          return response.json().then(function(data) {
-            throw new Error(data.mensaje || "Error " + response.status);
-          });
-        }
-        return response.json();
-      })
-      .then(function(data) {
-        analizando = false;
-        if (data.error) {
-          setDescripcion("⚠️ " + data.mensaje);
-          setStatus(false, "Error: " + data.mensaje);
-        } else if (data.descripcion) {
-          setDescripcion(data.descripcion);
-          setStatus(true, "✅ Análisis detallado completado");
-        } else {
-          setDescripcion("⚠️ No se recibió descripción");
-          setStatus(false, "Respuesta vacía");
-        }
-      })
-      .catch(function(error) {
-        analizando = false;
-        console.error("Error en análisis detallado:", error);
-        if (error.name === "TimeoutError" || error.name === "AbortError") {
-          setDescripcion("⏳ Tiempo de espera agotado para análisis detallado");
-          setStatus(false, "Timeout");
-        } else {
-          setDescripcion("❌ Error en análisis detallado");
-          setStatus(false, "Error");
-        }
-      });
-
-    } catch (error) {
-      analizando = false;
-      console.error("Error:", error);
-      setDescripcion("❌ Error al capturar");
-      setStatus(false, "Error en cámara");
+  // Función para convertir base64 a Blob
+  function base64ToBlob(base64, mimeType) {
+    var byteCharacters = atob(base64);
+    var byteArrays = [];
+    for (var i = 0; i < byteCharacters.length; i++) {
+      byteArrays.push(byteCharacters.charCodeAt(i));
     }
+    var byteArray = new Uint8Array(byteArrays);
+    return new Blob([byteArray], { type: mimeType });
   }
 
   // ============================================================
-  // 4.4 INICIAR CÁMARA
+  // 4.3 INICIAR CÁMARA
   // ============================================================
   btnStart.addEventListener("click", function() {
     if (isRunning) return;
 
-    // Verificar si estamos en producción
-    var enProduccion = document.body.dataset.produccion === "true";
-
-    if (enProduccion) {
-      setDescripcion("📌 La cámara en vivo no está disponible en producción.");
-      setStatus(false, "No disponible en producción");
-      return;
-    }
-
-    // Verificar que la API de DeepSeek está configurada
-    setStatus(true, "🔍 Verificando configuración...");
-    setDescripcion("Verificando conexión con DeepSeek...");
-
-    fetch("/api/estado")
-      .then(function(response) { 
-        if (!response.ok) {
-          throw new Error("Error al verificar estado");
-        }
-        return response.json(); 
-      })
-      .then(function(data) {
-        if (!data.deepseek || !data.deepseek.configurada) {
-          setDescripcion("❌ DeepSeek no está configurado. Contacta al administrador.");
-          setStatus(false, "API no configurada");
-          return;
-        }
-        console.log("✅ DeepSeek configurado correctamente. Modelo:", data.deepseek.modelo);
-        iniciarCamara();
-      })
-      .catch(function(error) {
-        console.error("Error verificando estado:", error);
-        setDescripcion("❌ Error verificando configuración: " + error.message);
-        setStatus(false, "Error");
-      });
-  });
-
-  function iniciarCamara() {
     var constraints = {
       video: {
         facingMode: "environment",
@@ -302,6 +238,7 @@
 
     setStatus(true, "📷 Solicitando acceso a la cámara...");
     setDescripcion("Solicitando permisos de cámara...");
+    setModelo("Conectando...", false);
 
     navigator.mediaDevices.getUserMedia(constraints)
       .then(function(mediaStream) {
@@ -313,8 +250,10 @@
         isRunning = true;
         btnStart.disabled = true;
         btnStop.disabled = false;
+        if (btnCapturar) btnCapturar.disabled = false;
         setStatus(true, "✅ Cámara activa");
         setDescripcion("📷 Observando entorno...");
+        setModelo("Conectado", false);
 
         // Iniciar análisis automático cada 3 segundos
         if (intervalId) clearInterval(intervalId);
@@ -340,12 +279,13 @@
           mensajeError += "Error: " + error.message;
         }
         setDescripcion(mensajeError);
+        setModelo("Error", false);
         btnStart.disabled = false;
       });
-  }
+  });
 
   // ============================================================
-  // 4.5 DETENER CÁMARA
+  // 4.4 DETENER CÁMARA
   // ============================================================
   btnStop.addEventListener("click", function() {
     detenerCamara();
@@ -375,20 +315,26 @@
     analizando = false;
     btnStart.disabled = false;
     btnStop.disabled = true;
+    if (btnCapturar) btnCapturar.disabled = true;
     setStatus(false, "⏹️ Cámara detenida");
     setDescripcion("Presiona 'Iniciar Cámara' para comenzar a describir tu entorno...");
+    setModelo("Detenido", false);
+    
+    // Ocultar audio
+    if (audioContainer) {
+      audioContainer.style.display = "none";
+    }
     
     console.log("⏹️ Cámara detenida");
   }
 
   // ============================================================
-  // 4.6 BOTÓN PARA ANÁLISIS DETALLADO
+  // 4.5 BOTÓN CAPTURAR MANUAL
   // ============================================================
-  var btnDetalle = document.getElementById("btnDetalle");
-  if (btnDetalle) {
-    btnDetalle.addEventListener("click", function() {
+  if (btnCapturar) {
+    btnCapturar.addEventListener("click", function() {
       if (isRunning) {
-        captureAndProcessDetailed();
+        captureAndProcess();
       } else {
         setDescripcion("⚠️ Inicia la cámara primero");
         setStatus(false, "Cámara no iniciada");
@@ -397,14 +343,14 @@
   }
 
   // ============================================================
-  // 4.7 LIMPIEZA AL SALIR DE LA PÁGINA
+  // 4.6 LIMPIEZA AL SALIR DE LA PÁGINA
   // ============================================================
   window.addEventListener("beforeunload", function() {
     detenerCamara();
   });
 
   // ============================================================
-  // 4.8 DETECTAR CUANDO LA PÁGINA SE VUELVE VISIBLE/OCULTA
+  // 4.7 DETECTAR CUANDO LA PÁGINA SE VUELVE VISIBLE/OCULTA
   // ============================================================
   document.addEventListener("visibilitychange", function() {
     if (document.hidden && isRunning) {
@@ -419,16 +365,14 @@
       if (!intervalId) {
         intervalId = setInterval(captureAndProcess, 3000);
         console.log("▶️ Análisis reanudado (página visible)");
-        // Análisis inmediato al volver
         setTimeout(captureAndProcess, 500);
       }
     }
   });
 
   // ============================================================
-  // 4.9 RECUPERAR CÁMARA SI SE PIERDE LA CONEXIÓN
+  // 4.8 RECUPERAR CÁMARA SI SE PIERDE LA CONEXIÓN
   // ============================================================
-  // Si el video se detiene inesperadamente, intentar recuperar
   if (video) {
     video.addEventListener("pause", function() {
       if (isRunning && stream) {
