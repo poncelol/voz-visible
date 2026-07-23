@@ -115,16 +115,13 @@
     setStatus(true, "📷 Capturando...");
 
     try {
-      // Configurar canvas
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 480;
       var ctx = canvas.getContext("2d");
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // Convertir a base64 con formato correcto
       var imageData = canvas.toDataURL("image/jpeg", 0.8);
 
-      // Enviar al servidor
       fetch("/analizar-camara", {
         method: "POST",
         headers: {
@@ -132,9 +129,9 @@
         },
         body: JSON.stringify({
           imagen: imageData,
-          detalle: false // Cambiar a true para análisis detallado
+          detalle: false
         }),
-        timeout: 15000 // 15 segundos de timeout
+        timeout: 15000
       })
       .then(function(response) {
         if (!response.ok) {
@@ -292,11 +289,9 @@
         setStatus(true, "✅ Cámara activa");
         setDescripcion("📷 Observando entorno...");
 
-        // Iniciar análisis automático cada 3 segundos
         if (intervalId) clearInterval(intervalId);
         intervalId = setInterval(captureAndProcess, 3000);
 
-        // Análisis inmediato
         setTimeout(captureAndProcess, 500);
       })
       .catch(function(error) {
@@ -315,19 +310,16 @@
   });
 
   function detenerCamara() {
-    // Detener intervalo
     if (intervalId) {
       clearInterval(intervalId);
       intervalId = null;
     }
 
-    // Detener tracks de la cámara
     if (stream) {
       stream.getTracks().forEach(function(track) { track.stop(); });
       stream = null;
     }
 
-    // Limpiar video
     if (video) {
       video.srcObject = null;
     }
@@ -341,9 +333,8 @@
   }
 
   // ============================================================
-  // 4.6 BOTONES ADICIONALES (Si existen)
+  // 4.6 BOTÓN PARA ANÁLISIS DETALLADO
   // ============================================================
-  // Botón para análisis detallado si existe
   var btnDetalle = document.getElementById("btnDetalle");
   if (btnDetalle) {
     btnDetalle.addEventListener("click", function() {
@@ -367,13 +358,11 @@
   // ============================================================
   document.addEventListener("visibilitychange", function() {
     if (document.hidden && isRunning) {
-      // Pausar análisis cuando la página no está visible
       if (intervalId) {
         clearInterval(intervalId);
         intervalId = null;
       }
     } else if (!document.hidden && isRunning) {
-      // Reanudar análisis cuando la página vuelve a ser visible
       if (!intervalId) {
         intervalId = setInterval(captureAndProcess, 3000);
       }

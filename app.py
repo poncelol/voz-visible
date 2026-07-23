@@ -133,7 +133,7 @@ def ejecutar_con_reintentos(func, *args, **kwargs):
     raise Exception("Máximo de reintentos alcanzado")
 
 # ============================================================
-# FUNCIÓN PRINCIPAL PARA DEEPSEEK
+# FUNCIÓN PRINCIPAL PARA DEEPSEEK (VERSIÓN CORREGIDA)
 # ============================================================
 def describir_imagen_deepseek(imagen_bytes: bytes, prompt_texto: str) -> str:
     """Envía imagen a DeepSeek y devuelve descripción."""
@@ -142,7 +142,7 @@ def describir_imagen_deepseek(imagen_bytes: bytes, prompt_texto: str) -> str:
         raise Exception("DEEPSEEK_API_KEY no configurada")
 
     try:
-        # Procesar imagen con PIL
+        # 1. Procesar imagen con PIL
         with Image.open(io.BytesIO(imagen_bytes)) as img:
             # Redimensionar a máximo 800px
             max_size = 800
@@ -160,11 +160,13 @@ def describir_imagen_deepseek(imagen_bytes: bytes, prompt_texto: str) -> str:
             img.save(buffer, format='JPEG', quality=80)
             imagen_bytes = buffer.getvalue()
     except Exception as e:
-        print(f"⚠️ Error procesando imagen: {e}")
-        # Si falla PIL, intentar usar los bytes originales
+        print(f"⚠️ Error procesando imagen con PIL: {e}")
+        # Si falla, usar los bytes originales
 
-    # Codificar a base64
+    # 2. Codificar a base64
     imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
+    
+    # 3. Crear URL de datos
     data_url = f"data:image/jpeg;base64,{imagen_base64}"
 
     headers = {
@@ -197,7 +199,6 @@ def describir_imagen_deepseek(imagen_bytes: bytes, prompt_texto: str) -> str:
         
         # Log para debugging
         print(f"📡 DeepSeek response status: {response.status_code}")
-        
         if response.status_code != 200:
             print(f"❌ Error response: {response.text[:200]}")
             response.raise_for_status()
