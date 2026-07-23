@@ -1,6 +1,6 @@
 # ============================================================
 # Voz Visible — Generador de audiodescripciones inclusivas
-# Con manejo de cuota de Gemini API
+# Con DeepSeek para cámara en vivo y Gemini para imágenes
 # ============================================================
 
 import os
@@ -17,6 +17,7 @@ from flask import Flask, render_template, request, url_for, jsonify
 from gtts import gTTS
 from PIL import Image
 from google import genai
+import openai  # Para DeepSeek API
 
 load_dotenv()
 
@@ -24,8 +25,16 @@ BASE_DIR = Path(__file__).resolve().parent
 GENERATED_DIR = BASE_DIR / "static" / "generated"
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
+# ============================================================
+# CONFIGURACIÓN DE APIS
+# ============================================================
+# Gemini para imágenes
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+# DeepSeek para cámara en vivo
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024  # 12 MB
@@ -33,9 +42,8 @@ app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024  # 12 MB
 # ============================================================
 # CONFIGURACIÓN DE CUOTA Y RATE LIMITING
 # ============================================================
-# Diccionario para rastrear solicitudes por usuario/IP
 ultima_solicitud = {}
-TIEMPO_MINIMO_ENTRE_SOLICITUDES = 10  # segundos
+TIEMPO_MINIMO_ENTRE_SOLICITUDES = 5  # segundos (DeepSeek es más permisivo)
 MAX_REINTENTOS = 3
 TIEMPO_ESPERA_REINTENTO = 5  # segundos base
 
@@ -100,10 +108,11 @@ PROMPT_ANALISIS_EN_VIVO = """
 Describe de forma muy breve, clara y directa (máximo 1 o 2 oraciones) 
 lo que ves en este fotograma de cámara en vivo para explicárselo a alguien en voz alta.
 Enfócate en elementos principales como personas, objetos, colores y acciones visibles.
+Responde SOLO con la descripción, sin introducciones ni explicaciones adicionales.
 """
 
-# CAMBIADO: Usar modelo con cuota más alta
-MODELO_GEMINI = "gemini-1.5-flash"  # Cambiado de 2.5-flash a 1.5-flash
+MODELO_GEMINI = "gemini-1.5-flash"
+MODELO_DEEPSEEK = "deepseek-vl2"  # Modelo de DeepSeek con visión
 
 # ============================================================
 # FUNCIONES DE CONTROL DE CUOTA
@@ -124,32 +133,9 @@ def verificar_limite_solicitudes(usuario="default") -> tuple[bool, int]:
     ultima_solicitud[usuario] = ahora
     return True, 0
 
-def manejar_error_quota(error_message: str) -> dict:
-    """
-    Analiza el mensaje de error de cuota y devuelve información útil.
-    """
-    tiempo_espera = 30  # tiempo por defecto
-    
-    # Intentar extraer el tiempo de espera del mensaje de error
-    if "retryDelay" in error_message:
-        try:
-            import re
-            match = re.search(r'retryDelay["\s:]+(\d+)s', error_message)
-            if match:
-                tiempo_espera = int(match.group(1)) + 5
-        except:
-            pass
-    
-    return {
-        "error": "Límite de solicitudes alcanzado",
-        "detalle": "La API de Gemini tiene un límite de solicitudes por minuto. Espera unos segundos y vuelve a intentarlo.",
-        "tiempo_espera": tiempo_espera,
-        "tipo": "quota_exceeded"
-    }
-
 def ejecutar_con_reintentos(func, *args, **kwargs):
     """
-    Ejecuta una función con reintentos en caso de error de cuota.
+    Ejecuta una función con reintentos en caso de error.
     """
     for intento in range(MAX_REINTENTOS):
         try:
@@ -165,36 +151,25 @@ def ejecutar_con_reintentos(func, *args, **kwargs):
             
         except Exception as e:
             error_str = str(e)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                print(f"Error de cuota (intento {intento+1}/{MAX_REINTENTOS}): {error_str}")
-                
-                # Intentar extraer tiempo de espera
-                tiempo_espera = 30
-                if "retryDelay" in error_str:
-                    try:
-                        import re
-                        match = re.search(r'retryDelay["\s:]+(\d+)s', error_str)
-                        if match:
-                            tiempo_espera = int(match.group(1)) + 5
-                    except:
-                        pass
+            if "429" in error_str or "rate_limit" in error_str.lower():
+                print(f"Error de rate limit (intento {intento+1}/{MAX_REINTENTOS}): {error_str}")
+                tiempo_espera = 10 * (intento + 1)
                 
                 if intento < MAX_REINTENTOS - 1:
                     print(f"Esperando {tiempo_espera} segundos antes de reintentar...")
                     time.sleep(tiempo_espera)
                 else:
-                    raise Exception(f"Error de cuota persistente después de {MAX_REINTENTOS} intentos. Espera un minuto y vuelve a intentarlo.")
+                    raise Exception(f"Error persistente después de {MAX_REINTENTOS} intentos.")
             else:
-                # Otro tipo de error
                 raise e
     
     raise Exception("Número máximo de reintentos alcanzado")
 
 # ============================================================
-# FUNCIONES PRINCIPALES
+# FUNCIONES PARA GEMINI (IMÁGENES)
 # ============================================================
-def describir_imagen_con_reintentos(ruta_imagen: Path, nivel_complejidad: str = "estándar") -> str:
-    """Envía la imagen a Gemini con manejo de reintentos."""
+def describir_imagen_gemini(ruta_imagen: Path, nivel_complejidad: str = "estándar") -> str:
+    """Envía la imagen a Gemini y devuelve la audiodescripción."""
     imagen = Image.open(ruta_imagen)
     prompt = (
         PROMPT_AUDIODESCRIPCION_SIMPLIFICADA
@@ -210,22 +185,8 @@ def describir_imagen_con_reintentos(ruta_imagen: Path, nivel_complejidad: str = 
     
     return ejecutar_con_reintentos(_describir)
 
-def describir_fotograma_en_vivo_con_reintentos(imagen_bytes: bytes) -> str:
-    """Analiza un fotograma en vivo con manejo de reintentos."""
-    import io
-    imagen_pil = Image.open(io.BytesIO(imagen_bytes))
-    
-    def _describir():
-        respuesta = gemini_client.models.generate_content(
-            model=MODELO_GEMINI, 
-            contents=[PROMPT_ANALISIS_EN_VIVO, imagen_pil]
-        )
-        return respuesta.text.strip()
-    
-    return ejecutar_con_reintentos(_describir)
-
-def traducir_texto_con_reintentos(texto: str, idioma_destino: str) -> str:
-    """Traduce un texto con manejo de reintentos."""
+def traducir_texto_gemini(texto: str, idioma_destino: str) -> str:
+    """Traduce un texto usando Gemini."""
     prompt = PROMPT_TRADUCCION.format(idioma_destino=idioma_destino, texto=texto)
     
     def _traducir():
@@ -236,6 +197,54 @@ def traducir_texto_con_reintentos(texto: str, idioma_destino: str) -> str:
     
     return ejecutar_con_reintentos(_traducir)
 
+# ============================================================
+# FUNCIONES PARA DEEPSEEK (CÁMARA EN VIVO)
+# ============================================================
+def describir_fotograma_deepseek(imagen_bytes: bytes) -> str:
+    """Analiza un fotograma de cámara en vivo con DeepSeek."""
+    
+    # Convertir imagen a base64
+    imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
+    
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": MODELO_DEEPSEEK,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": PROMPT_ANALISIS_EN_VIVO
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{imagen_base64}"
+                        }
+                    }
+                ]
+            }
+        ],
+        "max_tokens": 100,
+        "temperature": 0.3
+    }
+    
+    def _analizar():
+        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"].strip()
+    
+    return ejecutar_con_reintentos(_analizar)
+
+# ============================================================
+# FUNCIONES AUXILIARES
+# ============================================================
 def generar_audio(texto: str, ruta_salida: Path, idioma_gtts: str = "es") -> None:
     """Convierte el texto en un archivo mp3 con gTTS."""
     gTTS(text=texto, lang=idioma_gtts, slow=False).save(str(ruta_salida))
@@ -260,7 +269,7 @@ def procesar_todo_inclusivo(
     incluir_traduccion: bool,
 ) -> dict:
     """
-    Flujo completo de procesamiento con manejo de cuota.
+    Flujo completo de procesamiento con Gemini para imágenes.
     """
     # 1) Imagen
     if origen == "subir":
@@ -276,19 +285,19 @@ def procesar_todo_inclusivo(
         ruta_imagen = GENERATED_DIR / f"{session_id}_generada.png"
         generar_imagen_ia(prompt_final, ruta_imagen)
 
-    # 2) Descripción base en español (con reintentos)
-    descripcion_es = describir_imagen_con_reintentos(ruta_imagen, nivel_cognitivo)
+    # 2) Descripción base en español (con Gemini)
+    descripcion_es = describir_imagen_gemini(ruta_imagen, nivel_cognitivo)
     descripciones = {}
     if "es" in idiomas_elegidos:
         descripciones["es"] = descripcion_es
 
-    # 3) Traducciones (con reintentos)
+    # 3) Traducciones (con Gemini)
     for codigo in idiomas_elegidos:
         if codigo == "es":
             continue
         if incluir_traduccion:
             nombre_largo = IDIOMAS.get(codigo, {}).get("traduccion", codigo)
-            descripciones[codigo] = traducir_texto_con_reintentos(descripcion_es, nombre_largo)
+            descripciones[codigo] = traducir_texto_gemini(descripcion_es, nombre_largo)
         else:
             descripciones[codigo] = descripcion_es
 
@@ -316,7 +325,7 @@ def index():
     return render_template(
         "index.html",
         idiomas=IDIOMAS,
-        api_configurada=bool(GEMINI_API_KEY),
+        api_configurada=bool(GEMINI_API_KEY and DEEPSEEK_API_KEY),
         error=None,
         resultado=None,
         valores={"nivel": "estándar", "idiomas": ["es"], "origen": "generar",
@@ -362,7 +371,6 @@ def generar():
             error=None, resultado=resultado, valores=valores,
         )
     except Exception as exc:
-        # Verificar si es error de cuota
         error_msg = str(exc)
         if "429" in error_msg or "quota" in error_msg.lower():
             error_amigable = "⚠️ Límite de solicitudes de Gemini alcanzado. Por favor, espera 30 segundos y vuelve a intentarlo."
@@ -377,10 +385,10 @@ def generar():
 
 @app.route('/analizar-imagen', methods=['POST'])
 def analizar_imagen():
-    """Analiza un fotograma de cámara en tiempo real con manejo de cuota."""
+    """Analiza un fotograma de cámara en tiempo real con DeepSeek."""
     try:
-        if not GEMINI_API_KEY:
-            return jsonify({'error': 'Gemini no está configurado. Falta GEMINI_API_KEY.'}), 500
+        if not DEEPSEEK_API_KEY:
+            return jsonify({'error': 'DeepSeek no está configurado. Falta DEEPSEEK_API_KEY.'}), 500
             
         data = request.get_json()
         image_data = data.get('imagen', '')
@@ -396,7 +404,7 @@ def analizar_imagen():
             
         image_bytes = base64.b64decode(encoded)
         
-        # Verificar rate limit antes de procesar
+        # Verificar rate limit
         ip_usuario = request.remote_addr or "default"
         puede_proceder, tiempo_espera = verificar_limite_solicitudes(ip_usuario)
         
@@ -407,17 +415,17 @@ def analizar_imagen():
                 'tiempo_espera': tiempo_espera
             }), 429
         
-        # Analizar la imagen (con reintentos internos)
+        # Analizar la imagen con DeepSeek
         try:
-            descripcion = describir_fotograma_en_vivo_con_reintentos(image_bytes)
+            descripcion = describir_fotograma_deepseek(image_bytes)
             return jsonify({'descripcion': descripcion})
         except Exception as e:
             error_str = str(e)
-            if "429" in error_str or "quota" in error_str.lower():
+            if "429" in error_str or "rate_limit" in error_str.lower():
                 return jsonify({
-                    'error': 'quota_exceeded',
-                    'mensaje': 'Límite de cuota alcanzado. Espera 30 segundos.',
-                    'tiempo_espera': 30
+                    'error': 'rate_limit',
+                    'mensaje': 'Límite de solicitudes de DeepSeek alcanzado. Espera unos segundos.',
+                    'tiempo_espera': 10
                 }), 429
             raise e
         
@@ -425,9 +433,6 @@ def analizar_imagen():
         print(f"Error en el análisis: {e}")
         return jsonify({'error': f'Error al analizar: {str(e)}'}), 500
 
-# ============================================================
-# ENDPOINT DE ESTADO DE CUOTA (opcional, para el frontend)
-# ============================================================
 @app.route('/api/estado-cuota', methods=['GET'])
 def estado_cuota():
     """Devuelve el estado actual de la cuota."""
@@ -437,7 +442,8 @@ def estado_cuota():
     return jsonify({
         'puede_proceder': puede_proceder,
         'tiempo_espera': tiempo_espera if not puede_proceder else 0,
-        'modelo': MODELO_GEMINI,
+        'api_imagenes': 'Gemini' if GEMINI_API_KEY else 'No configurada',
+        'api_camara': 'DeepSeek' if DEEPSEEK_API_KEY else 'No configurada',
         'mensaje': 'Listo' if puede_proceder else f'Espera {tiempo_espera} segundos'
     })
 
@@ -445,8 +451,12 @@ def estado_cuota():
 # EJECUCIÓN
 # ============================================================
 if __name__ == '__main__':
-    print(f"🚀 Voz Visible iniciado")
-    print(f"📊 Modelo Gemini: {MODELO_GEMINI}")
+    print("🚀 Voz Visible iniciado")
+    print(f"📊 Modelo para imágenes: {MODELO_GEMINI} (Gemini)")
+    print(f"📷 Modelo para cámara: {MODELO_DEEPSEEK} (DeepSeek)")
     print(f"⏱️  Tiempo mínimo entre solicitudes: {TIEMPO_MINIMO_ENTRE_SOLICITUDES}s")
     print(f"🔄 Máximo de reintentos: {MAX_REINTENTOS}")
+    print("")
+    print(f"✅ Gemini API: {'Configurada' if GEMINI_API_KEY else '❌ No configurada'}")
+    print(f"✅ DeepSeek API: {'Configurada' if DEEPSEEK_API_KEY else '❌ No configurada'}")
     app.run(host='0.0.0.0', port=5000, debug=True)
