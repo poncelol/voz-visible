@@ -1,12 +1,12 @@
 # ============================================================
-# Voz Visible — Versión con BLIP LOCAL (CONTENIDO REAL)
+# Voz Visible — Generador de audiodescripciones
+# Versión con Groq Vision (100% GRATUITO)
 # ============================================================
 
 import os
 import uuid
 import base64
 import io
-import gc
 from pathlib import Path
 from urllib.parse import quote
 from datetime import datetime
@@ -17,18 +17,6 @@ from dotenv import load_dotenv
 from flask import Flask, render_template, request, url_for, jsonify
 from gtts import gTTS
 from PIL import Image, ImageStat
-
-# ============================================================
-# IMPORTAR BLIP LOCAL
-# ============================================================
-try:
-    from transformers import BlipProcessor, BlipForConditionalGeneration
-    import torch
-    BLIP_DISPONIBLE = True
-    print("✅ BLIP disponible")
-except ImportError:
-    BLIP_DISPONIBLE = False
-    print("❌ BLIP no disponible")
 
 load_dotenv()
 
@@ -43,33 +31,10 @@ app.secret_key = os.environ.get("SECRET_KEY", "tu-clave-secreta-aqui")
 EN_PRODUCCION = os.environ.get('RENDER') == 'true'
 
 # ============================================================
-# CARGAR BLIP
+# CONFIGURACIÓN GROQ (100% GRATUITO)
 # ============================================================
-processor = None
-model = None
-
-if BLIP_DISPONIBLE:
-    print("🔄 Cargando BLIP...")
-    try:
-        # Usar cache para evitar descargas repetidas
-        cache_dir = os.path.join(BASE_DIR, "model_cache")
-        os.makedirs(cache_dir, exist_ok=True)
-        
-        processor = BlipProcessor.from_pretrained(
-            "Salesforce/blip-image-captioning-base",
-            cache_dir=cache_dir
-        )
-        model = BlipForConditionalGeneration.from_pretrained(
-            "Salesforce/blip-image-captioning-base",
-            cache_dir=cache_dir
-        )
-        model.eval()
-        print("✅ BLIP cargado correctamente")
-    except Exception as e:
-        print(f"❌ Error cargando BLIP: {e}")
-        BLIP_DISPONIBLE = False
-        processor = None
-        model = None
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODELO = "llama-3.2-11b-vision-preview"
 
 # ============================================================
 # IDIOMAS
@@ -84,43 +49,78 @@ IDIOMAS = {
 }
 
 # ============================================================
-# DESCRIBIR CON BLIP LOCAL (CONTENIDO REAL)
+# FUNCIÓN PARA DESCRIBIR CON GROQ (GRATIS)
 # ============================================================
 
-def describir_con_blip(imagen_bytes: bytes) -> str:
-    """Usa BLIP local para describir el CONTENIDO REAL."""
-    if not BLIP_DISPONIBLE or model is None or processor is None:
+def describir_con_groq(imagen_bytes: bytes) -> str:
+    """
+    Usa Groq Vision para describir el CONTENIDO REAL de la imagen.
+    100% GRATUITO - sin límites conocidos.
+    """
+    if not GROQ_API_KEY:
+        print("⚠️ GROQ_API_KEY no configurada")
         return None
     
     try:
-        # Abrir imagen
-        imagen = Image.open(io.BytesIO(imagen_bytes))
+        # Codificar imagen a base64
+        imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
         
-        # Reducir si es muy grande (ahorra memoria)
-        max_size = 800
-        if imagen.width > max_size or imagen.height > max_size:
-            imagen.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+        # URL de Groq API
+        url = "https://api.groq.com/openai/v1/chat/completions"
         
-        # Procesar con BLIP
-        inputs = processor(imagen, return_tensors="pt")
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
         
-        with torch.no_grad():
-            out = model.generate(
-                **inputs,
-                max_length=50,
-                num_beams=4,
-                temperature=0.7
-            )
-            descripcion = processor.decode(out[0], skip_special_tokens=True)
+        payload = {
+            "model": GROQ_MODELO,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Describe esta imagen en español. Máximo 3 frases. Sé específico sobre lo que ves: personas, objetos, acciones, colores, ambiente."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{imagen_base64}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 150,
+            "temperature": 0.7
+        }
         
-        if descripcion and len(descripcion) > 10:
-            print(f"✅ BLIP: {descripcion}")
-            return descripcion
+        print(f"📤 Enviando a Groq...")
+        
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
+        
+        print(f"📥 Respuesta Groq: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            descripcion = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            
+            if descripcion and len(descripcion) > 10:
+                print(f"✅ Groq: {descripcion}")
+                return descripcion
+        else:
+            print(f"❌ Error Groq: {response.status_code} - {response.text}")
         
         return None
         
     except Exception as e:
-        print(f"❌ Error en BLIP: {e}")
+        print(f"❌ Error en Groq: {e}")
         return None
 
 # ============================================================
@@ -176,10 +176,10 @@ def describir_tecnico(imagen_bytes: bytes) -> str:
 # ============================================================
 
 def describir_imagen(imagen_bytes: bytes) -> str:
-    """Intenta BLIP primero, luego fallback."""
+    """Intenta con Groq primero, luego fallback."""
     
-    # Intentar con BLIP (CONTENIDO REAL)
-    descripcion = describir_con_blip(imagen_bytes)
+    # Intentar con Groq (CONTENIDO REAL)
+    descripcion = describir_con_groq(imagen_bytes)
     if descripcion:
         return descripcion
     
@@ -263,15 +263,15 @@ def procesar_todo_inclusivo(
         generar_audio(texto_a_leer, ruta_audio, idioma_gtts)
         audios[codigo] = ruta_audio.name
 
-    es_blip = BLIP_DISPONIBLE and "píxeles" not in descripcion_es.lower() and "composición" not in descripcion_es.lower()
+    es_groq = GROQ_API_KEY and "píxeles" not in descripcion_es.lower() and "composición" not in descripcion_es.lower()
 
     return {
         "imagen_nombre": ruta_imagen.name,
         "descripciones": descripciones,
         "audios": audios,
         "nivel_cognitivo": nivel_cognitivo,
-        "modelo_usado": "BLIP Local" if es_blip else "Técnico (fallback)",
-        "es_blip": es_blip
+        "modelo_usado": "Groq Vision" if es_groq else "Técnico (fallback)",
+        "es_groq": es_groq
     }
 
 # ============================================================
@@ -283,7 +283,7 @@ def index():
     return render_template(
         "index.html",
         idiomas=IDIOMAS,
-        api_configurada=BLIP_DISPONIBLE,
+        api_configurada=bool(GROQ_API_KEY),
         en_produccion=EN_PRODUCCION,
         error=None,
         resultado=None,
@@ -294,7 +294,7 @@ def index():
             "prompt": "Una cocina luminosa con dos personas cocinando",
             "traducir": False
         },
-        blip_disponible=BLIP_DISPONIBLE
+        groq_configurada=bool(GROQ_API_KEY)
     )
 
 @app.route("/generar", methods=["POST"])
@@ -327,23 +327,23 @@ def generar():
         return render_template(
             "index.html",
             idiomas=IDIOMAS,
-            api_configurada=BLIP_DISPONIBLE,
+            api_configurada=bool(GROQ_API_KEY),
             en_produccion=EN_PRODUCCION,
             error=None,
             resultado=resultado,
             valores=valores,
-            blip_disponible=BLIP_DISPONIBLE
+            groq_configurada=bool(GROQ_API_KEY)
         )
     except Exception as exc:
         return render_template(
             "index.html",
             idiomas=IDIOMAS,
-            api_configurada=BLIP_DISPONIBLE,
+            api_configurada=bool(GROQ_API_KEY),
             en_produccion=EN_PRODUCCION,
             error=str(exc),
             resultado=None,
             valores=valores,
-            blip_disponible=BLIP_DISPONIBLE
+            groq_configurada=bool(GROQ_API_KEY)
         )
 
 # ============================================================
@@ -355,8 +355,8 @@ def estado_camara():
     return jsonify({
         'activo': True,
         'gratuito': True,
-        'modelo': 'BLIP Local' if BLIP_DISPONIBLE else 'Técnico (fallback)',
-        'blip_disponible': BLIP_DISPONIBLE,
+        'modelo': 'Groq Vision' if GROQ_API_KEY else 'Técnico (fallback)',
+        'groq_configurada': bool(GROQ_API_KEY),
         'version': '2.0.0'
     })
 
@@ -388,14 +388,14 @@ def procesar_stream_camara():
         except:
             pass
         
-        es_blip = BLIP_DISPONIBLE and "píxeles" not in descripcion.lower() and "composición" not in descripcion.lower()
+        es_groq = GROQ_API_KEY and "píxeles" not in descripcion.lower() and "composición" not in descripcion.lower()
         
         return jsonify({
             'descripcion': descripcion,
             'audio': audio_base64,
             'timestamp': datetime.now().isoformat(),
-            'modelo': 'BLIP Local' if es_blip else 'Técnico (fallback)',
-            'es_blip': es_blip
+            'modelo': 'Groq Vision' if es_groq else 'Técnico (fallback)',
+            'es_groq': es_groq
         })
         
     except Exception as e:
@@ -406,12 +406,12 @@ def procesar_stream_camara():
 def estado_sistema():
     return jsonify({
         'modelo': {
-            'nombre': 'BLIP Local' if BLIP_DISPONIBLE else 'Técnico (fallback)',
+            'nombre': 'Groq Vision' if GROQ_API_KEY else 'Técnico (fallback)',
             'gratuito': True,
-            'memoria_mb': '~500' if BLIP_DISPONIBLE else '< 100',
-            'tipo': 'IA local (Transformers)',
-            'blip_disponible': BLIP_DISPONIBLE,
-            'descripcion_contenido_real': BLIP_DISPONIBLE
+            'memoria_mb': '< 50',
+            'tipo': 'API externa (groq.com)',
+            'groq_configurada': bool(GROQ_API_KEY),
+            'descripcion_contenido_real': bool(GROQ_API_KEY)
         },
         'camara': {
             'activa': True,
@@ -429,17 +429,25 @@ def estado_sistema():
 
 if __name__ == '__main__':
     print("=" * 55)
-    print("🚀 Voz Visible — Versión con BLIP LOCAL")
+    print("🚀 Voz Visible — Versión con Groq Vision")
     print("=" * 55)
-    print(f"🖼️ Modelo: {'BLIP Local (CONTENIDO REAL)' if BLIP_DISPONIBLE else 'Técnico (fallback)'}")
+    print(f"🖼️ Modelo: {'Groq Vision (CONTENIDO REAL)' if GROQ_API_KEY else 'Técnico (fallback)'}")
     print(f"📷 Cámara en vivo: ACTIVADA")
-    print(f"💾 Memoria estimada: {'~500 MB' if BLIP_DISPONIBLE else '< 100 MB'}")
+    print(f"💾 Memoria estimada: < 50 MB")
     print(f"💰 Costo: 100% GRATUITO")
     print("")
-    print("📝 Ejemplo de descripción que verás:")
-    print("   ✅ 'Una mujer está cocinando en una cocina moderna'")
-    print("   ❌ 'Imagen cuadrada, colores negro, muy oscuro'")
-    print("")
+    
+    if not GROQ_API_KEY:
+        print("⚠️  IMPORTANTE: GROQ_API_KEY no configurada")
+        print("   Obtén tu API key GRATIS en: https://console.groq.com")
+        print("   Luego añádela como variable de entorno:")
+        print("   GROQ_API_KEY=tu-api-key")
+        print("")
+    else:
+        print("✅ Groq API configurada correctamente")
+        print("   Las descripciones serán de CONTENIDO REAL")
+        print("   Ejemplo: 'Una mujer cocinando en una cocina moderna'")
+        print("")
     
     port = int(os.environ.get('PORT', 5000))
     print(f"🔌 Escuchando en http://localhost:{port}")
