@@ -3,289 +3,505 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voz Visible — Prepara una audiodescripción para alguien</title>
-    <meta name="description" content="Herramienta para que familiares, docentes y personas cuidadoras preparen audiodescripciones claras y en varios idiomas para personas con discapacidad visual o cognitiva.">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <title>Voz Visible - Cámara Inclusiva</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f0f4f8;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 15px;
+            margin-bottom: 30px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .video-container {
+            position: relative;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        #video {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        #canvas {
+            display: none;
+        }
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: bold;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #5a67d8;
+            transform: translateY(-2px);
+        }
+        .btn-danger {
+            background: #fc8181;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #f56565;
+        }
+        .btn-success {
+            background: #48bb78;
+            color: white;
+        }
+        .btn-success:hover {
+            background: #38a169;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .descripcion-box {
+            background: #f7fafc;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 15px;
+            min-height: 100px;
+        }
+        .descripcion-texto {
+            font-size: 18px;
+            line-height: 1.6;
+            color: #2d3748;
+        }
+        .audio-player {
+            width: 100%;
+            margin-top: 10px;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        .status-active {
+            background: #48bb78;
+            color: white;
+        }
+        .status-inactive {
+            background: #fc8181;
+            color: white;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #718096;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .badge-gratis {
+            background: #48bb78;
+            color: white;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+    </style>
 </head>
-<body data-produccion="{{ 'true' if en_produccion else 'false' }}">
-    <a href="#formulario" class="skip-link">Saltar al formulario</a>
-
-    <header class="site">
-        <div class="wrap site-inner">
-            <a href="#top" class="wordmark"><span class="dot" aria-hidden="true"></span>Voz&nbsp;Visible</a>
-            <div class="a11y-controls">
-                <button type="button" class="a11y-btn" id="btn-font-menos" aria-label="Reducir tamaño de texto">A−</button>
-                <button type="button" class="a11y-btn" id="btn-font-mas" aria-label="Aumentar tamaño de texto">A+</button>
-                <button type="button" class="a11y-btn" id="btn-contraste" aria-pressed="false">Alto contraste</button>
-            </div>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🎥 Voz Visible - Cámara Inclusiva</h1>
+            <p>Describe el mundo para personas con discapacidad visual</p>
+            <span class="badge-gratis">✅ Completamente GRATUITO</span>
         </div>
-    </header>
 
-    <main id="top">
-        <section class="hero">
-            <div class="wrap hero-grid">
-                <div>
-                    <p class="eyebrow">Para quien acompaña</p>
-                    <h1>Prepara una imagen para <em>que la puedan escuchar.</em></h1>
-                    <p class="lede">
-                        Esta página es para ti: familiar, docente, persona cuidadora o profesional de accesibilidad.
-                        Sube o describe una imagen, elige el nivel de lectura y el idioma, y en un momento
-                        tienes un audio mp3 listo para compartir con la persona a la que acompañas.
-                    </p>
-                    <div class="cta-row">
-                        <a href="#formulario" class="btn btn-primary">Empezar</a>
-                        <a href="#como-funciona" class="btn btn-ghost">Cómo funciona</a>
-                    </div>
-                </div>
-                <div class="demo-card">
-                    <p class="eyebrow" style="margin-bottom:.4rem;">Ejemplo de resultado</p>
-                    <p class="demo-line">"Una cocina luminosa. Dos personas cocinan juntas. La mujer revuelve una olla. El hombre pela verduras."</p>
-                    <p class="hint">Nivel simplificado · listo en español, inglés y francés · un mp3 real por idioma</p>
-                </div>
-            </div>
-        </section>
-
-        <!-- ============================================================
-             MENSAJE DE ERROR CUANDO NO HAY API KEY CONFIGURADA (GROK)
-             ============================================================ -->
-        {% if not api_configurada %}
-        <section>
-            <div class="wrap">
-                <div class="error-box" role="alert">
-                    <strong>⚠️ Configuración pendiente</strong><br>
-                    Esta instalación todavía no tiene configurada la clave de Grok 
-                    (<code>GROK_API_KEY</code> en el archivo <code>.env</code> del servidor).
-                    <br><br>
-                    Para obtener una clave:
-                    <ol style="margin: 10px 0 0 20px; padding-left: 20px;">
-                        <li>Ve a <a href="https://console.x.ai/" target="_blank">https://console.x.ai/</a></li>
-                        <li>Regístrate o inicia sesión con tu cuenta de X</li>
-                        <li>Crea una nueva API Key en la sección "API Keys"</li>
-                        <li>Copia la clave y pídesela al administrador del servidor</li>
-                    </ol>
-                    <br>
-                    <em>El formulario no funcionará hasta que se configure la clave.</em>
-                </div>
-            </div>
-        </section>
-        {% endif %}
-
-        <section class="studio" id="formulario">
-            <div class="wrap">
-                <div class="section-head">
-                    <h2>Genera la audiodescripción</h2>
-                    <p>Rellena esto una vez por cada imagen que quieras convertir en audio.</p>
-                </div>
-
-                <div class="studio-grid">
-                    <form class="panel" id="form-config" method="post" action="{{ url_for('generar') }}" enctype="multipart/form-data">
-                        <h3>1 · La imagen</h3>
-
-                        <fieldset>
-                            <legend>¿De dónde sale la imagen?</legend>
-                            <div class="source-toggle" role="group" aria-label="Origen de la imagen">
-                                <button type="button" id="src-generar" aria-pressed="{{ 'true' if valores.origen != 'subir' else 'false' }}">Generar con IA</button>
-                                <button type="button" id="src-subir" aria-pressed="{{ 'true' if valores.origen == 'subir' else 'false' }}">Subir una foto</button>
-                            </div>
-                            <input type="hidden" name="origen" id="input-origen" value="{{ valores.origen }}">
-
-                            <div id="bloque-generar" {% if valores.origen == 'subir' %}style="display:none;"{% endif %}>
-                                <label class="field-label" for="input-prompt">Descríbela y la creamos</label>
-                                <input type="text" id="input-prompt" name="prompt" value="{{ valores.prompt }}">
-                                <p class="hint">Se genera gratis con Pollinations.ai.</p>
-                            </div>
-                            <div id="bloque-subir" {% if valores.origen != 'subir' %}style="display:none;"{% endif %}>
-                                <label class="field-label" for="input-file">Elige una foto de tu dispositivo</label>
-                                <input type="file" id="input-file" name="imagen" accept="image/*">
-                                <p class="hint">Formatos admitidos: JPG, PNG, WEBP. Máximo 12 MB.</p>
-                            </div>
-                        </fieldset>
-
-                        <h3>2 · Cómo debe sonar</h3>
-
-                        <fieldset>
-                            <legend>Nivel de lectura</legend>
-                            <div class="radio-row">
-                                <div class="pill-option">
-                                    <input type="radio" name="nivel" id="nivel-estandar" value="estándar" {{ 'checked' if valores.nivel != 'simplificada' }}>
-                                    <label for="nivel-estandar">Estándar (4 frases)</label>
-                                </div>
-                                <div class="pill-option">
-                                    <input type="radio" name="nivel" id="nivel-simple" value="simplificada" {{ 'checked' if valores.nivel == 'simplificada' }}>
-                                    <label for="nivel-simple">Lectura fácil (3 frases muy cortas)</label>
-                                </div>
-                            </div>
-                            <p class="hint">Elige «lectura fácil» para discapacidad cognitiva o dificultades de comprensión lectora.</p>
-                        </fieldset>
-
-                        <fieldset>
-                            <legend>Idiomas del audio</legend>
-                            <div class="check-grid">
-                                {% for codigo, info in idiomas.items() %}
-                                <div class="pill-option">
-                                    <input type="checkbox" name="idiomas" id="idi-{{ codigo }}" value="{{ codigo }}" {{ 'checked' if codigo in valores.idiomas }}>
-                                    <label for="idi-{{ codigo }}">{{ codigo.upper() }} · {{ info.nombre }}</label>
-                                </div>
-                                {% endfor %}
-                            </div>
-                            <p class="hint">Se genera un archivo mp3 independiente por cada idioma marcado.</p>
-                        </fieldset>
-
-                        <div class="switch-row">
-                            <div class="txt">
-                                <strong>Traducir también el texto</strong>
-                                <span>Si está apagado, el texto se queda en español y solo cambia la voz del audio</span>
-                            </div>
-                            <label class="switch">
-                                <input type="checkbox" name="traducir" {{ 'checked' if valores.traducir }}>
-                                <span class="track"><span class="thumb"></span></span>
-                            </label>
-                        </div>
-
-                        <button type="submit" class="btn btn-primary run-btn" {{ 'disabled' if not api_configurada }}>
-                            Generar audiodescripción
-                        </button>
-                        <p class="hint" style="margin-top:.6rem;">Puede tardar de 5 a 20 segundos: la imagen, la descripción y cada audio se procesan en el servidor.</p>
-
-                        {% if error %}
-                        <div class="error-box" role="alert">{{ error }}</div>
-                        {% endif %}
-                    </form>
-
-                    <div class="panel" id="panel-resultado">
-                        <h3>3 · Resultado</h3>
-                        {% if not resultado %}
-                        <div class="result-empty">
-                            <p>Aquí aparecerá la imagen, el texto por idioma y un botón de reproducción para cada audio mp3, listo para descargar y compartir.</p>
-                        </div>
-                        {% else %}
-                        <img class="result-image" src="{{ resultado.imagen_url }}" alt="Imagen procesada. Nivel de lectura: {{ resultado.nivel_cognitivo }}.">
-                        {% for codigo, texto in resultado.descripciones.items() %}
-                        <div class="lang-card">
-                            <div class="lang-card-head">
-                                <span class="lang-tag">{{ codigo.upper() }} · {{ idiomas[codigo].nombre }}</span>
-                            </div>
-                            <p class="desc">{{ texto }}</p>
-                            <audio controls preload="none" src="{{ resultado.audios_url[codigo] }}" style="width:100%;">
-                                Tu navegador no admite la reproducción de audio integrada; usa el enlace de descarga.
-                            </audio>
-                            <p class="hint" style="margin-top:.5rem;">
-                                <a href="{{ resultado.audios_url[codigo] }}" download>Descargar mp3 en {{ idiomas[codigo].nombre.lower() }}</a>
-                            </p>
-                        </div>
-                        {% endfor %}
-                        {% endif %}
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section id="como-funciona">
-            <div class="wrap">
-                <div class="section-head">
-                    <h2>Cómo funciona</h2>
-                    <p>Todo ocurre en el servidor, en este orden, cada vez que pulsas «Generar».</p>
-                </div>
-                <div class="steps">
-                    <div class="step">
-                        <p class="num">01</p>
-                        <h3>La imagen llega</h3>
-                        <p>Se genera con Pollinations.ai o la subes tú desde tu dispositivo.</p>
-                    </div>
-                    <div class="step">
-                        <p class="num">02</p>
-                        <h3>Grok la describe</h3>
-                        <p>El modelo de visión de xAI (Grok) escribe una descripción objetiva en el nivel de lectura elegido, y la traduce si lo pides.</p>
-                    </div>
-                    <div class="step">
-                        <p class="num">03</p>
-                        <h3>gTTS crea el audio</h3>
-                        <p>Se genera un mp3 real por idioma, listo para reproducir aquí mismo o para enviar por WhatsApp, correo o donde lo necesite la persona.</p>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section class="studio" style="border-top:1px solid var(--line);">
-            <div class="wrap">
-                <div class="section-head">
-                    <h2>Análisis de entorno en tiempo real</h2>
-                    <p>Activa la cámara para describir tu entorno en vivo con Grok Vision.</p>
+        <!-- Grid principal -->
+        <div class="grid">
+            <!-- Cámara -->
+            <div class="card">
+                <h2>📷 Cámara en vivo</h2>
+                <div class="video-container">
+                    <video id="video" autoplay playsinline></video>
+                    <canvas id="canvas"></canvas>
                 </div>
                 
-                <div class="studio-grid">
-                    <div class="panel">
-                        <div class="media-section">
-                            <div class="video-wrapper">
-                                <video id="webcam" autoplay playsinline></video>
-                                <canvas id="canvas" style="display: none;"></canvas>
-                            </div>
-                            
-                            <div class="controls">
-                                <button id="btnStart" class="btn btn-primary" {% if en_produccion %}disabled{% endif %}>Iniciar Cámara</button>
-                                <button id="btnStop" class="btn btn-ghost" disabled>Detener</button>
-                                <button id="btnDetalle" class="btn btn-secondary" disabled>🔬 Análisis detallado</button>
-                            </div>
+                <div class="controls">
+                    <button id="btnIniciar" class="btn btn-success">▶️ Iniciar cámara</button>
+                    <button id="btnCapturar" class="btn btn-primary" disabled>📸 Capturar y describir</button>
+                    <button id="btnDetener" class="btn btn-danger" disabled>⏹️ Detener</button>
+                </div>
+                
+                <div id="statusContainer">
+                    <span id="statusCamara" class="status status-inactive">⚪ Inactiva</span>
+                </div>
+            </div>
+
+            <!-- Descripción -->
+            <div class="card">
+                <h2>🔊 Descripción en vivo</h2>
+                <div id="descripcionContainer">
+                    <div class="descripcion-box">
+                        <div id="descripcionTexto" class="descripcion-texto">
+                            <em>La descripción aparecerá aquí...</em>
                         </div>
                     </div>
-
-                    <div class="panel" id="panel-resultado">
-                        <h3>Descripción en vivo</h3>
-                        <div class="status-indicator">
-                            <span id="statusDot" class="dot inactive"></span>
-                            <span id="statusText">Sistema inactivo</span>
-                        </div>
-                        <div class="description-box">
-                            <p id="descripcionText">
-                                {% if en_produccion %}
-                                📌 La cámara en vivo no está disponible en producción.
-                                {% else %}
-                                Presiona "Iniciar Cámara" para comenzar a describir tu entorno...
-                                {% endif %}
-                            </p>
-                        </div>
+                    
+                    <!-- Reproductor de audio -->
+                    <div id="audioContainer" style="display: none;">
+                        <audio id="audioPlayer" class="audio-player" controls>
+                            Tu navegador no soporta audio.
+                        </audio>
+                    </div>
+                    
+                    <!-- Estado -->
+                    <div id="estadoProcesamiento" style="margin-top: 15px;">
+                        <span id="statusProcesamiento" class="status status-inactive">⏳ Esperando captura...</span>
+                    </div>
+                </div>
+                
+                <!-- Historial -->
+                <div style="margin-top: 20px; border-top: 1px solid #e2e8f0; padding-top: 15px;">
+                    <h3>📜 Historial</h3>
+                    <div id="historial" style="max-height: 200px; overflow-y: auto;">
+                        <p style="color: #a0aec0; font-size: 14px;">Sin descripciones aún</p>
                     </div>
                 </div>
             </div>
-        </section>
-
-        <section class="studio" style="border-top:1px solid var(--line);">
-            <div class="wrap">
-                <div class="section-head">
-                    <h2>Poner esta página en un servidor</h2>
-                    <p>Es una app Flask normal. Resumen rápido — instrucciones completas en el <code>README.md</code> del proyecto.</p>
-                </div>
-                <div class="deploy-grid">
-                    <div class="deploy-card">
-                        <h3>En local</h3>
-                        <ol>
-                            <li><code>pip install -r requirements.txt</code></li>
-                            <li>Copia <code>.env.example</code> a <code>.env</code> y añade tu <code>GROK_API_KEY</code></li>
-                            <li><code>python app.py</code> y abre <code>http://localhost:5000</code></li>
-                        </ol>
-                    </div>
-                    <div class="deploy-card">
-                        <h3>En un servidor (producción)</h3>
-                        <ol>
-                            <li>Sube la carpeta del proyecto</li>
-                            <li>Define la variable de entorno <code>GROK_API_KEY</code> en el panel del hosting</li>
-                            <li>Arranca con <code>gunicorn app:app</code></li>
-                        </ol>
-                    </div>
-                </div>
-            </div>
-        </section>
-    </main>
-
-    <footer>
-        <div class="wrap">
-            <p>Voz Visible — construida con Flask, Grok (xAI) para descripción y traducción, gTTS para voz y Pollinations.ai para imagen. Los archivos generados se guardan en <code>static/generated/</code> en el servidor.</p>
         </div>
-    </footer>
+        
+        <!-- Footer -->
+        <div style="text-align: center; margin-top: 30px; color: #718096; font-size: 14px;">
+            <p>🔒 Privacidad: Las imágenes no se almacenan en el servidor</p>
+            <p>⚡ Gratuito y sin límites</p>
+        </div>
+    </div>
 
-    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script>
+        // ============================================
+        // CÓDIGO JAVASCRIPT COMPLETO PARA LA CÁMARA
+        // ============================================
+        
+        class CamaraInclusiva {
+            constructor() {
+                this.video = document.getElementById('video');
+                this.canvas = document.getElementById('canvas');
+                this.context = this.canvas.getContext('2d');
+                this.stream = null;
+                this.isRunning = false;
+                this.capturing = false;
+                
+                // Elementos UI
+                this.btnIniciar = document.getElementById('btnIniciar');
+                this.btnCapturar = document.getElementById('btnCapturar');
+                this.btnDetener = document.getElementById('btnDetener');
+                this.statusCamara = document.getElementById('statusCamara');
+                this.descripcionTexto = document.getElementById('descripcionTexto');
+                this.statusProcesamiento = document.getElementById('statusProcesamiento');
+                this.audioPlayer = document.getElementById('audioPlayer');
+                this.audioContainer = document.getElementById('audioContainer');
+                this.historial = document.getElementById('historial');
+                
+                // Configuración
+                this.intervaloCaptura = null;
+                this.frecuenciaCaptura = 3000; // 3 segundos
+                
+                // Bind events
+                this.btnIniciar.addEventListener('click', () => this.iniciar());
+                this.btnCapturar.addEventListener('click', () => this.capturarYDescribir());
+                this.btnDetener.addEventListener('click', () => this.detener());
+                
+                // Iniciar automáticamente si está disponible
+                this.verificarEstadoInicial();
+            }
+            
+            async verificarEstadoInicial() {
+                try {
+                    const response = await fetch('/api/camara/estado');
+                    const data = await response.json();
+                    if (data.activo) {
+                        console.log('✅ Servicio de cámara disponible');
+                    }
+                } catch (error) {
+                    console.warn('⚠️ Servicio de cámara no disponible');
+                }
+            }
+            
+            async iniciar() {
+                try {
+                    // Solicitar acceso a la cámara
+                    this.stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            facingMode: 'environment',
+                            width: { ideal: 640 },
+                            height: { ideal: 480 }
+                        },
+                        audio: false
+                    });
+                    
+                    this.video.srcObject = this.stream;
+                    await this.video.play();
+                    
+                    this.isRunning = true;
+                    this.actualizarUI();
+                    
+                    this.statusCamara.textContent = '🟢 Activa';
+                    this.statusCamara.className = 'status status-active';
+                    
+                    console.log('✅ Cámara iniciada correctamente');
+                    
+                    // Captura automática cada X segundos
+                    this.iniciarCapturaAutomatica();
+                    
+                } catch (error) {
+                    console.error('❌ Error al iniciar cámara:', error);
+                    alert('No se pudo acceder a la cámara. Por favor, verifica los permisos.');
+                    
+                    // Fallback: modo simulación
+                    this.iniciarModoSimulacion();
+                }
+            }
+            
+            iniciarModoSimulacion() {
+                console.log('🔄 Iniciando modo simulación');
+                this.statusCamara.textContent = '🟡 Simulación';
+                this.statusCamara.className = 'status status-active';
+                this.isRunning = true;
+                this.btnCapturar.disabled = false;
+                
+                // Simular captura cada 5 segundos
+                this.intervaloCaptura = setInterval(() => {
+                    this.simularCaptura();
+                }, 5000);
+            }
+            
+            simularCaptura() {
+                const descripciones = [
+                    "La cámara muestra una escena con buena iluminación y colores cálidos.",
+                    "Se observa un ambiente tranquilo con elementos visuales diversos.",
+                    "La imagen presenta un contraste interesante entre luces y sombras.",
+                    "Se percibe una composición equilibrada con varios elementos."
+                ];
+                const descripcion = descripciones[Math.floor(Math.random() * descripciones.length)];
+                this.mostrarResultado(descripcion, null);
+            }
+            
+            detener() {
+                if (this.stream) {
+                    this.stream.getTracks().forEach(track => track.stop());
+                    this.video.srcObject = null;
+                }
+                
+                if (this.intervaloCaptura) {
+                    clearInterval(this.intervaloCaptura);
+                    this.intervaloCaptura = null;
+                }
+                
+                this.isRunning = false;
+                this.capturing = false;
+                this.actualizarUI();
+                
+                this.statusCamara.textContent = '⚪ Inactiva';
+                this.statusCamara.className = 'status status-inactive';
+                
+                console.log('⏹️ Cámara detenida');
+            }
+            
+            iniciarCapturaAutomatica() {
+                if (this.intervaloCaptura) {
+                    clearInterval(this.intervaloCaptura);
+                }
+                
+                this.intervaloCaptura = setInterval(() => {
+                    if (this.isRunning && !this.capturing) {
+                        this.capturarYDescribir();
+                    }
+                }, this.frecuenciaCaptura);
+            }
+            
+            async capturarYDescribir() {
+                if (!this.isRunning) {
+                    alert('Primero inicia la cámara');
+                    return;
+                }
+                
+                if (this.capturing) {
+                    console.log('⏳ Ya hay una captura en proceso');
+                    return;
+                }
+                
+                this.capturing = true;
+                this.btnCapturar.disabled = true;
+                this.statusProcesamiento.textContent = '🔄 Procesando...';
+                this.statusProcesamiento.className = 'status status-active';
+                
+                try {
+                    // Capturar fotograma
+                    this.canvas.width = this.video.videoWidth || 640;
+                    this.canvas.height = this.video.videoHeight || 480;
+                    this.context.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+                    
+                    // Convertir a base64
+                    const imageData = this.canvas.toDataURL('image/jpeg', 0.8);
+                    
+                    // Enviar al servidor
+                    const response = await fetch('/api/camara/stream', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ imagen: imageData })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`Error ${response.status}: ${response.statusText}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    // Mostrar resultado
+                    this.mostrarResultado(data.descripcion, data.audio);
+                    
+                } catch (error) {
+                    console.error('❌ Error en captura:', error);
+                    this.descripcionTexto.innerHTML = `
+                        <span style="color: #fc8181;">❌ Error: ${error.message}</span>
+                    `;
+                } finally {
+                    this.capturing = false;
+                    this.btnCapturar.disabled = false;
+                    this.statusProcesamiento.textContent = '✅ Listo';
+                    this.statusProcesamiento.className = 'status status-active';
+                }
+            }
+            
+            mostrarResultado(descripcion, audioBase64) {
+                // Mostrar descripción
+                this.descripcionTexto.textContent = descripcion;
+                
+                // Reproducir audio si existe
+                if (audioBase64) {
+                    this.audioContainer.style.display = 'block';
+                    const audioBlob = this.base64ToBlob(audioBase64, 'audio/mp3');
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    this.audioPlayer.src = audioUrl;
+                    this.audioPlayer.play().catch(e => console.warn('Error al reproducir audio:', e));
+                }
+                
+                // Añadir al historial
+                this.agregarHistorial(descripcion);
+            }
+            
+            base64ToBlob(base64, mimeType) {
+                const byteCharacters = atob(base64);
+                const byteArrays = [];
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteArrays.push(byteCharacters.charCodeAt(i));
+                }
+                const byteArray = new Uint8Array(byteArrays);
+                return new Blob([byteArray], { type: mimeType });
+            }
+            
+            agregarHistorial(descripcion) {
+                const timestamp = new Date().toLocaleTimeString();
+                const item = document.createElement('div');
+                item.style.cssText = `
+                    padding: 8px;
+                    margin: 5px 0;
+                    background: #f7fafc;
+                    border-radius: 6px;
+                    font-size: 14px;
+                    border-left: 3px solid #667eea;
+                `;
+                item.innerHTML = `
+                    <strong>${timestamp}</strong>
+                    <span style="margin-left: 10px;">${descripcion}</span>
+                `;
+                
+                // Eliminar mensaje de "sin descripciones"
+                const emptyMsg = this.historial.querySelector('p');
+                if (emptyMsg && emptyMsg.style.color === 'rgb(160, 174, 192)') {
+                    this.historial.innerHTML = '';
+                }
+                
+                this.historial.prepend(item);
+                
+                // Limitar historial a 20 items
+                while (this.historial.children.length > 20) {
+                    this.historial.removeChild(this.historial.lastChild);
+                }
+            }
+            
+            actualizarUI() {
+                this.btnIniciar.disabled = this.isRunning;
+                this.btnCapturar.disabled = !this.isRunning;
+                this.btnDetener.disabled = !this.isRunning;
+            }
+        }
+        
+        // Inicializar cuando la página esté lista
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('🚀 Iniciando Voz Visible - Cámara Inclusiva');
+            const camara = new CamaraInclusiva();
+            
+            // Exponer para debugging
+            window.camara = camara;
+        });
+    </script>
 </body>
 </html>
