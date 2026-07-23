@@ -34,7 +34,7 @@ EN_PRODUCCION = os.environ.get('RENDER') == 'true'
 # CONFIGURACIÓN GROQ (100% GRATUITO)
 # ============================================================
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODELO = "llama-3.2-11b-vision-instruct"
+GROQ_MODELO = "llama-3.2-11b-vision-preview"  # ✅ MODELO CORREGIDO
 
 # ============================================================
 # IDIOMAS
@@ -192,6 +192,7 @@ def describir_imagen(imagen_bytes: bytes) -> str:
 # ============================================================
 
 def generar_audio(texto: str, ruta_salida: Path, idioma_gtts: str = "es") -> None:
+    """Genera archivo de audio a partir de texto."""
     try:
         gTTS(text=texto, lang=idioma_gtts, slow=False).save(str(ruta_salida))
     except Exception as e:
@@ -199,6 +200,7 @@ def generar_audio(texto: str, ruta_salida: Path, idioma_gtts: str = "es") -> Non
         raise
 
 def generar_imagen_ia(prompt: str, ruta_salida: Path) -> Path:
+    """Genera imagen usando Pollinations AI."""
     url = f"https://image.pollinations.ai/prompt/{quote(prompt)}"
     respuesta = requests.get(
         url, params={"width": 1024, "height": 1024, "nologo": "true"}, timeout=60
@@ -208,7 +210,7 @@ def generar_imagen_ia(prompt: str, ruta_salida: Path) -> Path:
     return ruta_salida
 
 # ============================================================
-# PROCESAMIENTO
+# PROCESAMIENTO PRINCIPAL
 # ============================================================
 
 def procesar_todo_inclusivo(
@@ -220,6 +222,8 @@ def procesar_todo_inclusivo(
     idiomas_elegidos: List[str],
     incluir_traduccion: bool,
 ) -> Dict:
+    """Procesa imagen, descripción, traducción y genera audio."""
+    
     # Obtener imagen
     if origen == "subir":
         if archivo_subido is None or archivo_subido.filename == "":
@@ -246,6 +250,7 @@ def procesar_todo_inclusivo(
         if len(frases) > 3:
             descripcion_es = '. '.join(frases[:3]) + '.'
 
+    # Preparar descripciones en varios idiomas
     descripciones = {}
     if "es" in idiomas_elegidos:
         descripciones["es"] = descripcion_es
@@ -255,6 +260,7 @@ def procesar_todo_inclusivo(
             continue
         descripciones[codigo] = descripcion_es
 
+    # Generar audios
     audios = {}
     for codigo in idiomas_elegidos:
         texto_a_leer = descripciones.get(codigo, descripcion_es)
@@ -280,6 +286,7 @@ def procesar_todo_inclusivo(
 
 @app.route("/", methods=["GET"])
 def index():
+    """Página principal."""
     return render_template(
         "index.html",
         idiomas=IDIOMAS,
@@ -299,6 +306,7 @@ def index():
 
 @app.route("/generar", methods=["POST"])
 def generar():
+    """Genera audiodescrpciones."""
     valores = {
         "nivel": request.form.get("nivel", "estándar"),
         "idiomas": request.form.getlist("idiomas") or ["es"],
@@ -352,6 +360,7 @@ def generar():
 
 @app.route('/api/camara/estado', methods=['GET'])
 def estado_camara():
+    """Retorna estado de la cámara."""
     return jsonify({
         'activo': True,
         'gratuito': True,
@@ -362,6 +371,7 @@ def estado_camara():
 
 @app.route('/api/camara/stream', methods=['POST'])
 def procesar_stream_camara():
+    """Procesa stream de cámara en vivo."""
     try:
         data = request.get_json()
         if not data or 'imagen' not in data:
@@ -374,15 +384,19 @@ def procesar_stream_camara():
             encoded = image_data
         image_bytes = base64.b64decode(encoded)
         
+        # Describir imagen
         descripcion = describir_imagen(image_bytes)
         
+        # Generar audio
         session_id = uuid.uuid4().hex[:8]
         audio_path = GENERATED_DIR / f"{session_id}_camara.mp3"
         generar_audio(descripcion, audio_path, "es")
         
+        # Convertir audio a base64
         with open(audio_path, "rb") as f:
             audio_base64 = base64.b64encode(f.read()).decode('utf-8')
         
+        # Limpiar archivo temporal
         try:
             os.remove(audio_path)
         except:
@@ -404,6 +418,7 @@ def procesar_stream_camara():
 
 @app.route('/api/estado', methods=['GET'])
 def estado_sistema():
+    """Retorna estado del sistema."""
     return jsonify({
         'modelo': {
             'nombre': 'Groq Vision' if GROQ_API_KEY else 'Técnico (fallback)',
@@ -431,7 +446,7 @@ if __name__ == '__main__':
     print("=" * 55)
     print("🚀 Voz Visible — Versión con Groq Vision")
     print("=" * 55)
-    print(f"🖼️ Modelo: {'Groq Vision (CONTENIDO REAL)' if GROQ_API_KEY else 'Técnico (fallback)'}")
+    print(f"🖼️  Modelo: {'Groq Vision (CONTENIDO REAL)' if GROQ_API_KEY else 'Técnico (fallback)'}")
     print(f"📷 Cámara en vivo: ACTIVADA")
     print(f"💾 Memoria estimada: < 50 MB")
     print(f"💰 Costo: 100% GRATUITO")
