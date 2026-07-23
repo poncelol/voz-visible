@@ -1,0 +1,19 @@
+# Blueprint de Render — despliegue con un clic.
+# En Render: New + → Blueprint → conecta este repositorio → Render lee este
+# archivo y configura el servicio automáticamente. Solo te pedirá el valor
+# de GEMINI_API_KEY (no lo pongas aquí, es secreto).
+
+services:
+  - type: web
+    name: voz-visible
+    runtime: python
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    healthCheckPath: /
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false          # Render te pedirá pegarla manualmente en el panel, no queda en el repo
+      - key: PYTHON_VERSION
+        value: 3.11.9

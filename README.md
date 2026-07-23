@@ -46,25 +46,53 @@ voz-visible/
     └── generated/           # aquí se guardan las imágenes y audios generados
 ```
 
-## Desplegar en un servidor
+## Desplegar en Render (recomendado para empezar)
 
-Cualquier hosting que ejecute Python sirve (Render, Railway, PythonAnywhere,
-un VPS propio, etc.). Pasos generales:
+Este proyecto incluye `render.yaml`, así que el despliegue es casi de un clic:
 
-1. Sube el proyecto (por ejemplo, con git).
-2. Define la variable de entorno `GEMINI_API_KEY` en el panel del hosting
-   (no subas el archivo `.env` a un repositorio público).
-3. Instala dependencias: `pip install -r requirements.txt`.
-4. Arranca con un servidor de producción:
-   ```bash
-   gunicorn app:app --bind 0.0.0.0:8000
-   ```
-5. Si usas Nginx u otro proxy delante, apúntalo a ese puerto.
+1. Sube el proyecto a un repositorio de GitHub (asegúrate de que `.env` **no**
+   se sube — está en `.gitignore`).
+2. En [render.com](https://render.com), pulsa **New +** → **Blueprint**.
+3. Conecta tu repositorio. Render detecta `render.yaml` y configura solo el
+   servicio: build, arranque con `gunicorn app:app`, plan gratuito.
+4. Te pedirá el valor de `GEMINI_API_KEY` (definida en `render.yaml` como
+   secreta, así que no queda escrita en el repo). Pégala ahí.
+5. Pulsa **Apply**. En uno o dos minutos tendrás una URL pública tipo
+   `https://voz-visible.onrender.com`.
 
-### Ejemplo con Render.com
-- Build command: `pip install -r requirements.txt`
-- Start command: `gunicorn app:app`
-- Añade `GEMINI_API_KEY` en **Environment**.
+**Nota sobre el plan gratuito:** si nadie visita la página durante 15
+minutos, el servicio se "duerme" y la siguiente visita tarda entre 30 y 60
+segundos en responder mientras arranca de nuevo. Para el uso previsto (una
+persona que prepara audiodescripciones de vez en cuando) es aceptable. Si
+más adelante lo usa un centro de forma constante, el plan de pago (desde
+unos 7 $/mes por servicio) elimina esa espera.
+
+**Nota sobre los archivos generados:** las imágenes y audios en
+`static/generated/` viven en el disco del servicio. En el plan gratuito ese
+disco no es permanente entre reinicios (el código y la variable de entorno
+sí se conservan). Para uso puntual no supone un problema; si necesitas que
+los audios generados persistan siempre, Render ofrece discos persistentes
+como add-on de pago.
+
+### Sin usar el Blueprint
+
+Si prefieres configurarlo manualmente en el panel de Render en vez de con
+`render.yaml`:
+- **Build Command:** `pip install -r requirements.txt`
+- **Start Command:** `gunicorn app:app`
+- **Environment → Add Environment Variable:** `GEMINI_API_KEY` = tu clave
+
+## Otros servidores
+
+- **Railway** ([railway.app](https://railway.app)): conecta el repo, define
+  `GEMINI_API_KEY` en Variables, y usa el mismo `Procfile` (`web: gunicorn app:app`).
+- **PythonAnywhere**: sube el código, crea una app Flask desde su panel,
+  apunta el WSGI a `app.py` (variable `app`), y define `GEMINI_API_KEY` en
+  la pestaña **Web → Environment variables**.
+- **VPS propio** (DigitalOcean, Hetzner, etc.): instala Python, clona el
+  repo, `pip install -r requirements.txt`, exporta `GEMINI_API_KEY`, y
+  arranca con `gunicorn app:app --bind 0.0.0.0:8000` detrás de Nginx.
+
 
 ## Notas importantes
 
