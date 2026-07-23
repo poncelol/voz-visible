@@ -1,6 +1,6 @@
 # ============================================================
 # Voz Visible — Generador de audiodescripciones
-# Versión con Groq Vision (100% GRATUITO)
+# Versión con Groq Vision (100% GRATUITO) + Traducción real
 # ============================================================
 
 import os
@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from flask import Flask, render_template, request, url_for, jsonify
 from gtts import gTTS
 from PIL import Image, ImageStat
+from deep_translator import GoogleTranslator
 
 load_dotenv()
 
@@ -39,14 +40,42 @@ GROQ_MODELO = "qwen/qwen3.6-27b"  # ✅ ÚNICO MODELO DE VISIÓN DISPONIBLE EN J
 # ============================================================
 # IDIOMAS
 # ============================================================
+# "gtts": código que usa gTTS para la voz
+# "traductor": código que usa deep-translator (Google Translate) para el texto
 IDIOMAS = {
-    "es": {"nombre": "Español", "gtts": "es"},
-    "en": {"nombre": "Inglés", "gtts": "en"},
-    "fr": {"nombre": "Francés", "gtts": "fr"},
-    "de": {"nombre": "Alemán", "gtts": "de"},
-    "it": {"nombre": "Italiano", "gtts": "it"},
-    "pt": {"nombre": "Portugués", "gtts": "pt"},
+    "es": {"nombre": "Español",    "gtts": "es", "traductor": "es"},
+    "en": {"nombre": "Inglés",     "gtts": "en", "traductor": "en"},
+    "fr": {"nombre": "Francés",    "gtts": "fr", "traductor": "fr"},
+    "de": {"nombre": "Alemán",     "gtts": "de", "traductor": "de"},
+    "it": {"nombre": "Italiano",   "gtts": "it", "traductor": "it"},
+    "pt": {"nombre": "Portugués",  "gtts": "pt", "traductor": "pt"},
 }
+
+# ============================================================
+# TRADUCCIÓN (deep-translator, gratuito, sin API key)
+# ============================================================
+
+def traducir_texto(texto: str, idioma_destino: str, idioma_origen: str = "es") -> str:
+    """
+    Traduce `texto` de idioma_origen -> idioma_destino usando deep-translator.
+    Si falla (sin internet, texto vacío, etc.) devuelve el texto original
+    para que la app nunca se rompa por un error de traducción.
+    """
+    if not texto or idioma_destino == idioma_origen:
+        return texto
+
+    try:
+        traducido = GoogleTranslator(
+            source=idioma_origen,
+            target=idioma_destino
+        ).translate(texto)
+        if traducido:
+            print(f"🌐 Traducido a '{idioma_destino}': {traducido}")
+            return traducido
+        return texto
+    except Exception as e:
+        print(f"⚠️ Error traduciendo a '{idioma_destino}': {e}")
+        return texto  # fallback: devolvemos el texto en español antes que fallar
 
 # ============================================================
 # FUNCIÓN PARA DESCRIBIR CON GROQ (GRATIS)
@@ -60,19 +89,19 @@ def describir_con_groq(imagen_bytes: bytes) -> str:
     if not GROQ_API_KEY:
         print("⚠️ GROQ_API_KEY no configurada")
         return None
-    
+
     try:
         # Codificar imagen a base64
         imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
-        
+
         # URL de Groq API
         url = "https://api.groq.com/openai/v1/chat/completions"
-        
+
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
-        
+
         payload = {
             "model": GROQ_MODELO,
             "messages": [
@@ -95,30 +124,30 @@ def describir_con_groq(imagen_bytes: bytes) -> str:
             "max_tokens": 150,
             "temperature": 0.7
         }
-        
+
         print(f"📤 Enviando a Groq...")
-        
+
         response = requests.post(
             url,
             json=payload,
             headers=headers,
             timeout=30
         )
-        
+
         print(f"📥 Respuesta Groq: {response.status_code}")
-        
+
         if response.status_code == 200:
             data = response.json()
             descripcion = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            
+
             if descripcion and len(descripcion) > 10:
                 print(f"✅ Groq: {descripcion}")
                 return descripcion
         else:
             print(f"❌ Error Groq: {response.status_code} - {response.text}")
-        
+
         return None
-        
+
     except Exception as e:
         print(f"❌ Error en Groq: {e}")
         return None
@@ -132,7 +161,7 @@ def describir_tecnico(imagen_bytes: bytes) -> str:
     try:
         imagen = Image.open(io.BytesIO(imagen_bytes))
         ancho, alto = imagen.size
-        
+
         # Color
         img_pequena = imagen.resize((50, 50))
         colores = img_pequena.getcolors(2500)
@@ -152,13 +181,13 @@ def describir_tecnico(imagen_bytes: bytes) -> str:
                 color = "azul"
             elif r > 200 and g > 200 and b < 100:
                 color = "amarillo"
-        
+
         # Brillo
         gris = imagen.convert('L')
         stat = ImageStat.Stat(gris)
         brillo = stat.mean[0]
         brillo_texto = "muy brillante" if brillo > 200 else "brillante" if brillo > 150 else "luminosidad media" if brillo > 100 else "oscuro" if brillo > 50 else "muy oscuro"
-        
+
         # Forma
         if ancho > alto * 1.5:
             forma = "horizontal"
@@ -166,7 +195,7 @@ def describir_tecnico(imagen_bytes: bytes) -> str:
             forma = "vertical"
         else:
             forma = "cuadrada"
-        
+
         return f"Imagen {forma}, colores {color}, {brillo_texto}."
     except:
         return "Imagen capturada por la cámara."
@@ -177,12 +206,12 @@ def describir_tecnico(imagen_bytes: bytes) -> str:
 
 def describir_imagen(imagen_bytes: bytes) -> str:
     """Intenta con Groq primero, luego fallback."""
-    
+
     # Intentar con Groq (CONTENIDO REAL)
     descripcion = describir_con_groq(imagen_bytes)
     if descripcion:
         return descripcion
-    
+
     # Fallback técnico
     print("⚠️ Usando fallback técnico")
     return describir_tecnico(imagen_bytes)
@@ -223,7 +252,7 @@ def procesar_todo_inclusivo(
     incluir_traduccion: bool,
 ) -> Dict:
     """Procesa imagen, descripción, traducción y genera audio."""
-    
+
     # Obtener imagen
     if origen == "subir":
         if archivo_subido is None or archivo_subido.filename == "":
@@ -242,15 +271,15 @@ def procesar_todo_inclusivo(
         with open(ruta_imagen, "rb") as f:
             imagen_bytes = f.read()
 
-    # DESCRIBIR
+    # DESCRIBIR (siempre se genera primero en español)
     descripcion_es = describir_imagen(imagen_bytes)
-    
+
     if nivel_cognitivo == "simplificada":
         frases = descripcion_es.split('. ')
         if len(frases) > 3:
             descripcion_es = '. '.join(frases[:3]) + '.'
 
-    # Preparar descripciones en varios idiomas
+    # Preparar descripciones en varios idiomas (TRADUCIENDO de verdad)
     descripciones = {}
     if "es" in idiomas_elegidos:
         descripciones["es"] = descripcion_es
@@ -258,9 +287,10 @@ def procesar_todo_inclusivo(
     for codigo in idiomas_elegidos:
         if codigo == "es":
             continue
-        descripciones[codigo] = descripcion_es
+        idioma_traductor = IDIOMAS.get(codigo, {}).get("traductor", codigo)
+        descripciones[codigo] = traducir_texto(descripcion_es, idioma_traductor, "es")
 
-    # Generar audios
+    # Generar audios (cada uno lee el texto YA traducido a su idioma)
     audios = {}
     for codigo in idiomas_elegidos:
         texto_a_leer = descripciones.get(codigo, descripcion_es)
@@ -331,7 +361,7 @@ def generar():
             codigo: url_for("static", filename=f"generated/{nombre}")
             for codigo, nombre in resultado["audios"].items()
         }
-        
+
         return render_template(
             "index.html",
             idiomas=IDIOMAS,
@@ -376,34 +406,42 @@ def procesar_stream_camara():
         data = request.get_json()
         if not data or 'imagen' not in data:
             return jsonify({'error': 'No se recibió imagen'}), 400
-        
+
         image_data = data['imagen']
         if ',' in image_data:
             _, encoded = image_data.split(',', 1)
         else:
             encoded = image_data
         image_bytes = base64.b64decode(encoded)
-        
-        # Describir imagen
-        descripcion = describir_imagen(image_bytes)
-        
-        # Generar audio
+
+        # Idioma opcional para la cámara en vivo (por defecto español)
+        idioma_camara = data.get('idioma', 'es')
+
+        # Describir imagen (siempre en español primero)
+        descripcion_es = describir_imagen(image_bytes)
+
+        # Traducir si el idioma pedido no es español
+        idioma_traductor = IDIOMAS.get(idioma_camara, {}).get("traductor", "es")
+        descripcion = traducir_texto(descripcion_es, idioma_traductor, "es")
+
+        # Generar audio en el idioma correspondiente
         session_id = uuid.uuid4().hex[:8]
+        idioma_gtts = IDIOMAS.get(idioma_camara, {}).get("gtts", "es")
         audio_path = GENERATED_DIR / f"{session_id}_camara.mp3"
-        generar_audio(descripcion, audio_path, "es")
-        
+        generar_audio(descripcion, audio_path, idioma_gtts)
+
         # Convertir audio a base64
         with open(audio_path, "rb") as f:
             audio_base64 = base64.b64encode(f.read()).decode('utf-8')
-        
+
         # Limpiar archivo temporal
         try:
             os.remove(audio_path)
         except:
             pass
-        
-        es_groq = GROQ_API_KEY and "píxeles" not in descripcion.lower() and "composición" not in descripcion.lower()
-        
+
+        es_groq = GROQ_API_KEY and "píxeles" not in descripcion_es.lower() and "composición" not in descripcion_es.lower()
+
         return jsonify({
             'descripcion': descripcion,
             'audio': audio_base64,
@@ -411,7 +449,7 @@ def procesar_stream_camara():
             'modelo': 'Groq Vision' if es_groq else 'Técnico (fallback)',
             'es_groq': es_groq
         })
-        
+
     except Exception as e:
         print(f"❌ Error en stream: {e}")
         return jsonify({'error': str(e)}), 500
@@ -444,14 +482,15 @@ def estado_sistema():
 
 if __name__ == '__main__':
     print("=" * 55)
-    print("🚀 Voz Visible — Versión con Groq Vision")
+    print("🚀 Voz Visible — Versión con Groq Vision + Traducción")
     print("=" * 55)
     print(f"🖼️  Modelo: {'Groq Vision (CONTENIDO REAL)' if GROQ_API_KEY else 'Técnico (fallback)'}")
     print(f"📷 Cámara en vivo: ACTIVADA")
+    print(f"🌐 Traducción: deep-translator (Google Translate, gratis)")
     print(f"💾 Memoria estimada: < 50 MB")
     print(f"💰 Costo: 100% GRATUITO")
     print("")
-    
+
     if not GROQ_API_KEY:
         print("⚠️  IMPORTANTE: GROQ_API_KEY no configurada")
         print("   Obtén tu API key GRATIS en: https://console.groq.com")
@@ -463,7 +502,7 @@ if __name__ == '__main__':
         print("   Las descripciones serán de CONTENIDO REAL")
         print("   Ejemplo: 'Una mujer cocinando en una cocina moderna'")
         print("")
-    
+
     port = int(os.environ.get('PORT', 5000))
     print(f"🔌 Escuchando en http://localhost:{port}")
     print("=" * 55)
