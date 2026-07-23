@@ -1,6 +1,6 @@
 # ============================================================
 # Voz Visible — Generador de audiodescripciones inclusivas
-# Con DeepSeek VL para imágenes y cámara en vivo
+# Con Grok (xAI) para imágenes y cámara en vivo
 # ============================================================
 
 import os
@@ -27,13 +27,16 @@ GENERATED_DIR = BASE_DIR / "static" / "generated"
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
 # ============================================================
-# CONFIGURACIÓN
+# CONFIGURACIÓN PARA GROK (xAI)
 # ============================================================
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+GROK_API_KEY = os.environ.get("GROK_API_KEY", "").strip()
+GROK_API_URL = "https://api.x.ai/v1/chat/completions"  # URL de la API de xAI
 
-# ⚠️ IMPORTANTE: Usar deepseek-vl que SÍ soporta imágenes
-MODELO_DEEPSEEK = "deepseek-v4-flash"  # <--- CAMBIO CLAVE
+# Modelos de Grok disponibles:
+# - grok-2-vision-1212 (con visión)
+# - grok-2-1212 (sin visión)
+# - grok-beta (versión beta)
+MODELO_GROK = "grok-2-vision-1212"  # <--- Con soporte para imágenes
 
 EN_PRODUCCION = os.environ.get('RENDER') == 'true' or os.environ.get('PORT') is not None
 
@@ -137,13 +140,13 @@ def ejecutar_con_reintentos(func, *args, **kwargs):
     raise Exception("Máximo de reintentos alcanzado")
 
 # ============================================================
-# FUNCIÓN PRINCIPAL PARA DEEPSEEK VL (CON IMÁGENES)
+# FUNCIÓN PRINCIPAL PARA GROK (CON IMÁGENES)
 # ============================================================
-def describir_imagen_deepseek(imagen_bytes: bytes, prompt_texto: str) -> str:
-    """Envía imagen a DeepSeek VL y devuelve descripción."""
+def describir_imagen_grok(imagen_bytes: bytes, prompt_texto: str) -> str:
+    """Envía imagen a Grok (xAI) y devuelve descripción."""
     
-    if not DEEPSEEK_API_KEY:
-        raise Exception("DEEPSEEK_API_KEY no configurada")
+    if not GROK_API_KEY:
+        raise Exception("GROK_API_KEY no configurada")
 
     try:
         # Procesar imagen con PIL
@@ -168,13 +171,13 @@ def describir_imagen_deepseek(imagen_bytes: bytes, prompt_texto: str) -> str:
     data_url = f"data:image/jpeg;base64,{imagen_base64}"
 
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Authorization": f"Bearer {GROK_API_KEY}",
         "Content-Type": "application/json"
     }
     
-    # Payload para deepseek-vl (soporta imágenes)
+    # Payload para Grok (formato compatible con OpenAI)
     payload = {
-        "model": MODELO_DEEPSEEK,  # deepseek-vl
+        "model": MODELO_GROK,
         "messages": [
             {
                 "role": "user",
@@ -194,9 +197,9 @@ def describir_imagen_deepseek(imagen_bytes: bytes, prompt_texto: str) -> str:
     }
     
     def _describir():
-        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
+        response = requests.post(GROK_API_URL, headers=headers, json=payload, timeout=30)
         
-        print(f"📡 DeepSeek response status: {response.status_code}")
+        print(f"📡 Grok response status: {response.status_code}")
         if response.status_code != 200:
             print(f"❌ Error response: {response.text[:200]}")
             response.raise_for_status()
@@ -207,26 +210,26 @@ def describir_imagen_deepseek(imagen_bytes: bytes, prompt_texto: str) -> str:
     return ejecutar_con_reintentos(_describir)
 
 # ============================================================
-# FUNCIÓN ALTERNATIVA (SI deepseek-vl falla)
+# FUNCIÓN ALTERNATIVA (formato más simple para Grok)
 # ============================================================
-def describir_imagen_deepseek_alternativo(imagen_bytes: bytes, prompt_texto: str) -> str:
-    """Versión alternativa con formato markdown para la imagen."""
-    if not DEEPSEEK_API_KEY:
-        raise Exception("DEEPSEEK_API_KEY no configurada")
+def describir_imagen_grok_alternativo(imagen_bytes: bytes, prompt_texto: str) -> str:
+    """Versión alternativa con formato más simple."""
+    if not GROK_API_KEY:
+        raise Exception("GROK_API_KEY no configurada")
 
     # Codificar a base64
     imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
     
-    # Formato alternativo: imagen como markdown en el texto
-    contenido = f"{prompt_texto}\n\n![image](data:image/jpeg;base64,{imagen_base64})"
+    # Formato alternativo
+    contenido = f"{prompt_texto}\n\n[Image: data:image/jpeg;base64,{imagen_base64}]"
     
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Authorization": f"Bearer {GROK_API_KEY}",
         "Content-Type": "application/json"
     }
     
     payload = {
-        "model": MODELO_DEEPSEEK,  # deepseek-vl
+        "model": MODELO_GROK,
         "messages": [
             {
                 "role": "user",
@@ -238,33 +241,33 @@ def describir_imagen_deepseek_alternativo(imagen_bytes: bytes, prompt_texto: str
     }
     
     def _describir():
-        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
+        response = requests.post(GROK_API_URL, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
     
     return ejecutar_con_reintentos(_describir)
 
-def traducir_texto_deepseek(texto: str, idioma_destino: str) -> str:
-    if not DEEPSEEK_API_KEY:
-        raise Exception("DEEPSEEK_API_KEY no configurada")
+def traducir_texto_grok(texto: str, idioma_destino: str) -> str:
+    if not GROK_API_KEY:
+        raise Exception("GROK_API_KEY no configurada")
     
     prompt = PROMPT_TRADUCCION.format(idioma_destino=idioma_destino, texto=texto)
     
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Authorization": f"Bearer {GROK_API_KEY}",
         "Content-Type": "application/json"
     }
     
     payload = {
-        "model": MODELO_DEEPSEEK,
+        "model": MODELO_GROK,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 200,
         "temperature": 0.3
     }
     
     def _traducir():
-        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
+        response = requests.post(GROK_API_URL, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
@@ -326,10 +329,10 @@ def procesar_todo_inclusivo(
         prompt = PROMPT_AUDIODESCRIPCION_ESTANDAR
 
     try:
-        descripcion_es = describir_imagen_deepseek(imagen_bytes, prompt)
+        descripcion_es = describir_imagen_grok(imagen_bytes, prompt)
     except Exception as e:
         print(f"⚠️ Error con formato estándar, probando alternativo...")
-        descripcion_es = describir_imagen_deepseek_alternativo(imagen_bytes, prompt)
+        descripcion_es = describir_imagen_grok_alternativo(imagen_bytes, prompt)
     
     descripciones = {}
     if "es" in idiomas_elegidos:
@@ -340,7 +343,7 @@ def procesar_todo_inclusivo(
             continue
         if incluir_traduccion:
             nombre_largo = IDIOMAS.get(codigo, {}).get("traduccion", codigo)
-            descripciones[codigo] = traducir_texto_deepseek(descripcion_es, nombre_largo)
+            descripciones[codigo] = traducir_texto_grok(descripcion_es, nombre_largo)
         else:
             descripciones[codigo] = descripcion_es
 
@@ -367,7 +370,7 @@ def index():
     return render_template(
         "index.html",
         idiomas=IDIOMAS,
-        api_configurada=bool(DEEPSEEK_API_KEY),
+        api_configurada=bool(GROK_API_KEY),
         en_produccion=EN_PRODUCCION,
         error=None,
         resultado=None,
@@ -390,11 +393,11 @@ def generar():
         "traducir": request.form.get("traducir") == "on",
     }
 
-    if not DEEPSEEK_API_KEY:
+    if not GROK_API_KEY:
         return render_template(
             "index.html", idiomas=IDIOMAS, api_configurada=False,
             en_produccion=EN_PRODUCCION,
-            error="❌ Falta configurar DEEPSEEK_API_KEY",
+            error="❌ Falta configurar GROK_API_KEY",
             resultado=None, valores=valores,
         )
 
@@ -430,12 +433,12 @@ def generar():
 
 @app.route('/analizar-camara', methods=['POST'])
 def analizar_camara():
-    """Analiza un fotograma de cámara con DeepSeek VL."""
+    """Analiza un fotograma de cámara con Grok."""
     
-    if not DEEPSEEK_API_KEY:
+    if not GROK_API_KEY:
         return jsonify({
             'error': 'no_api_key',
-            'mensaje': 'DEEPSEEK_API_KEY no configurada'
+            'mensaje': 'GROK_API_KEY no configurada'
         }), 503
 
     try:
@@ -470,7 +473,7 @@ def analizar_camara():
                 'mensaje': f'Espera {tiempo_espera} segundos'
             }), 429
 
-        # Analizar con DeepSeek VL
+        # Analizar con Grok
         if modo_detalle:
             prompt = PROMPT_ANALISIS_DETALLADO_CAMARA
         else:
@@ -479,21 +482,21 @@ def analizar_camara():
         print(f"📷 Analizando fotograma... (modo: {'detallado' if modo_detalle else 'rápido'})")
         
         try:
-            descripcion = describir_imagen_deepseek(image_bytes, prompt)
+            descripcion = describir_imagen_grok(image_bytes, prompt)
         except Exception as e:
             print(f"⚠️ Error con formato estándar, probando alternativo...")
-            descripcion = describir_imagen_deepseek_alternativo(image_bytes, prompt)
+            descripcion = describir_imagen_grok_alternativo(image_bytes, prompt)
             
         print(f"✅ Descripción: {descripcion[:100]}...")
 
         return jsonify({
             'descripcion': descripcion,
             'modo': 'detallado' if modo_detalle else 'rápido',
-            'modelo': MODELO_DEEPSEEK
+            'modelo': MODELO_GROK
         })
 
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error de red con DeepSeek: {e}")
+        print(f"❌ Error de red con Grok: {e}")
         return jsonify({
             'error': 'api_error',
             'mensaje': f'Error de conexión: {str(e)}'
@@ -508,9 +511,9 @@ def analizar_camara():
 @app.route('/api/estado', methods=['GET'])
 def estado_sistema():
     return jsonify({
-        'deepseek': {
-            'configurada': bool(DEEPSEEK_API_KEY),
-            'modelo': MODELO_DEEPSEEK
+        'grok': {
+            'configurada': bool(GROK_API_KEY),
+            'modelo': MODELO_GROK
         },
         'produccion': EN_PRODUCCION,
         'rate_limit': {'minimo_segundos': TIEMPO_MINIMO_ENTRE_SOLICITUDES}
@@ -521,9 +524,9 @@ def estado_sistema():
 # ============================================================
 if __name__ == '__main__':
     print("🚀 Voz Visible iniciado")
-    print(f"🖼️ Modelo: {MODELO_DEEPSEEK} (con soporte para imágenes)")
+    print(f"🖼️ Modelo: {MODELO_GROK} (Grok Vision)")
     print(f"🌐 Entorno: {'Producción' if EN_PRODUCCION else 'Desarrollo'}")
-    print(f"✅ DeepSeek API: {'Configurada' if DEEPSEEK_API_KEY else '❌ No configurada'}")
+    print(f"✅ Grok API: {'Configurada' if GROK_API_KEY else '❌ No configurada'}")
     print("")
     
     port = int(os.environ.get('PORT', 5000))
