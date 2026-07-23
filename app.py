@@ -1,6 +1,6 @@
 # ============================================================
 # Voz Visible — Generador de audiodescripciones inclusivas
-# Versión completa con cámara en vivo gratuita
+# Versión con BLIP para descripciones de CONTENIDO REAL
 # ============================================================
 
 import os
@@ -9,7 +9,6 @@ import base64
 import time
 import io
 import json
-import colorsys
 from pathlib import Path
 from urllib.parse import quote
 from datetime import datetime
@@ -17,9 +16,21 @@ from typing import Tuple, List, Dict, Optional
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, render_template, request, url_for, jsonify, send_file
+from flask import Flask, render_template, request, url_for, jsonify
 from gtts import gTTS
-from PIL import Image, ImageStat, ImageFilter, ImageEnhance
+from PIL import Image, ImageStat, ImageFilter
+
+# ============================================================
+# IMPORTAR BLIP PARA DESCRIPCIONES DE CONTENIDO REAL
+# ============================================================
+try:
+    from transformers import BlipProcessor, BlipForConditionalGeneration
+    import torch
+    BLIP_DISPONIBLE = True
+    print("✅ BLIP disponible - Descripciones de CONTENIDO REAL")
+except ImportError:
+    BLIP_DISPONIBLE = False
+    print("⚠️ BLIP no disponible - Usando análisis básico")
 
 load_dotenv()
 
@@ -34,6 +45,24 @@ app.secret_key = os.environ.get("SECRET_KEY", "tu-clave-secreta-aqui")
 EN_PRODUCCION = os.environ.get('RENDER') == 'true'
 
 # ============================================================
+# INICIALIZAR BLIP (MODELO GRATUITO)
+# ============================================================
+if BLIP_DISPONIBLE:
+    print("🔄 Cargando modelo BLIP...")
+    try:
+        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        print("✅ BLIP cargado correctamente")
+    except Exception as e:
+        print(f"❌ Error cargando BLIP: {e}")
+        BLIP_DISPONIBLE = False
+        processor = None
+        model = None
+else:
+    processor = None
+    model = None
+
+# ============================================================
 # IDIOMAS
 # ============================================================
 IDIOMAS = {
@@ -46,25 +75,10 @@ IDIOMAS = {
 }
 
 # ============================================================
-# PROMPTS (para referencia)
-# ============================================================
-PROMPT_AUDIODESCRIPCION_ESTANDAR = """
-Describe esta imagen para una persona ciega o con baja visión.
-Maximo 4 frases, lenguaje claro. Empieza por lo mas importante.
-"""
-
-PROMPT_AUDIODESCRIPCION_SIMPLIFICADA = """
-Describe esta imagen de forma MUY SIMPLE. Maximo 3 frases muy cortas.
-"""
-
-PROMPT_CAMARA_EN_VIVO = "Describe de forma breve (1-2 oraciones) lo que ves en esta imagen de cámara."
-PROMPT_ANALISIS_DETALLADO_CAMARA = "Analiza esta escena con más detalle (3-4 oraciones)."
-
-# ============================================================
 # FUNCIONES DE CONTROL
 # ============================================================
 ultima_solicitud = {}
-TIEMPO_MINIMO_ENTRE_SOLICITUDES = 2
+TIEMPO_MINIMO_ENTRE_SOLICITUDES = 1
 
 def verificar_limite_solicitudes(usuario="default") -> Tuple[bool, int]:
     ahora = datetime.now()
@@ -76,257 +90,69 @@ def verificar_limite_solicitudes(usuario="default") -> Tuple[bool, int]:
     return True, 0
 
 # ============================================================
-# ALGORITMOS DE VISIÓN POR COMPUTADORA (SIN API)
+# FUNCIÓN PRINCIPAL: DESCRIPCIÓN CON BLIP (CONTENIDO REAL)
 # ============================================================
 
-def obtener_color_dominante(imagen: Image.Image) -> str:
-    """Obtiene el color dominante de una imagen."""
-    try:
-        # Reducir imagen para análisis
-        img_pequena = imagen.resize((50, 50))
-        colores = img_pequena.getcolors(2500)
-        
-        if not colores:
-            return "color"
-        
-        # Ordenar por frecuencia
-        colores_ordenados = sorted(colores, key=lambda x: x[0], reverse=True)
-        r, g, b = colores_ordenados[0][1]
-        
-        # Convertir a nombre de color
-        if r > 200 and g > 200 and b > 200:
-            return "blanco"
-        elif r < 50 and g < 50 and b < 50:
-            return "negro"
-        elif r > 200 and g < 100 and b < 100:
-            return "rojo"
-        elif r < 100 and g > 200 and b < 100:
-            return "verde"
-        elif r < 100 and g < 100 and b > 200:
-            return "azul"
-        elif r > 200 and g > 200 and b < 100:
-            return "amarillo"
-        elif r > 200 and g > 100 and b < 150:
-            return "naranja"
-        elif r > 150 and g < 150 and b > 150:
-            return "morado"
-        elif r > 150 and g > 150 and b > 150:
-            return "gris claro"
-        elif r < 100 and g < 100 and b < 100:
-            return "gris oscuro"
-        else:
-            return "color"
-    except:
-        return "color"
-
-def analizar_brillo(imagen: Image.Image) -> str:
-    """Analiza el brillo general de la imagen."""
-    try:
-        # Convertir a escala de grises y calcular brillo promedio
-        gris = imagen.convert('L')
-        stat = ImageStat.Stat(gris)
-        brillo = stat.mean[0]
-        
-        if brillo > 200:
-            return "muy brillante"
-        elif brillo > 150:
-            return "brillante"
-        elif brillo > 100:
-            return "luminosidad media"
-        elif brillo > 50:
-            return "oscuro"
-        else:
-            return "muy oscuro"
-    except:
-        return "luminosidad media"
-
-def analizar_composicion(imagen: Image.Image) -> str:
-    """Analiza la composición de la imagen."""
-    try:
-        ancho, alto = imagen.size
-        
-        if ancho > alto * 1.5:
-            return "horizontal (paisaje)"
-        elif alto > ancho * 1.5:
-            return "vertical (retrato)"
-        else:
-            return "cuadrada"
-    except:
-        return "estándar"
-
-def analizar_contraste(imagen: Image.Image) -> str:
-    """Analiza el contraste de la imagen."""
-    try:
-        gris = imagen.convert('L')
-        stat = ImageStat.Stat(gris)
-        desviacion = stat.stddev[0]
-        
-        if desviacion > 80:
-            return "alto contraste"
-        elif desviacion > 40:
-            return "contraste medio"
-        else:
-            return "bajo contraste"
-    except:
-        return "contraste medio"
-
-def detectar_texto_simple(imagen: Image.Image) -> List[str]:
-    """Detección simple de texto (simulada)."""
-    try:
-        # En una versión real, aquí iría OCR
-        # Por ahora, devolvemos texto simulado basado en el tamaño
-        ancho, alto = imagen.size
-        
-        textos = []
-        if ancho > 800 and alto > 600:
-            # Simular detección de texto en la parte inferior
-            # Tomar una muestra de la parte inferior
-            parte_inferior = imagen.crop((0, int(alto*0.7), ancho, alto))
-            stat = ImageStat.Stat(parte_inferior.convert('L'))
-            if stat.stddev[0] > 30:
-                textos.append("posible texto en la parte inferior")
-        elif ancho > 600:
-            textos.append("posible texto visible")
-        
-        return textos
-    except:
-        return []
-
-def detectar_formas_simples(imagen: Image.Image) -> str:
-    """Detecta formas básicas en la imagen."""
-    try:
-        # Reducir y detectar bordes
-        gris = imagen.convert('L')
-        # Detectar bordes con filtro simple
-        bordes = gris.filter(ImageFilter.FIND_EDGES)
-        
-        # Analizar áreas
-        ancho, alto = imagen.size
-        formas = []
-        
-        # Simple detección basada en proporciones
-        if ancho > alto * 1.5:
-            formas.append("horizontes o elementos alargados")
-        elif alto > ancho * 1.5:
-            formas.append("elementos verticales o retratos")
-            
-        # Si hay muchos bordes
-        stat = ImageStat.Stat(bordes)
-        if stat.stddev[0] > 30:
-            formas.append("contornos definidos")
-        else:
-            formas.append("formas suaves y difusas")
-            
-        return ", ".join(formas) if formas else "formas indefinidas"
-        
-    except:
-        return "formas básicas"
-
-def analizar_distribucion(imagen: Image.Image) -> str:
-    """Analiza cómo están distribuidos los elementos."""
-    try:
-        ancho, alto = imagen.size
-        
-        # Dividir en 9 secciones
-        tercio_ancho = ancho // 3
-        tercio_alto = alto // 3
-        
-        # Simular detección de áreas activas
-        secciones_activas = 0
-        for x in range(0, ancho, max(1, tercio_ancho)):
-            for y in range(0, alto, max(1, tercio_alto)):
-                # Tomar muestra pequeña
-                if x + 20 < ancho and y + 20 < alto:
-                    muestra = imagen.crop((x, y, x+20, y+20))
-                    stat = ImageStat.Stat(muestra)
-                    if stat.stddev[0] > 20:  # Si hay variación
-                        secciones_activas += 1
-        
-        if secciones_activas >= 6:
-            return "La escena está distribuida de manera uniforme."
-        elif secciones_activas >= 3:
-            return "Los elementos se concentran en ciertas áreas."
-        else:
-            return "La imagen tiene un enfoque central o poco contenido."
-            
-    except:
-        return "Distribución estándar."
-
-def describir_imagen_con_algoritmos(imagen_bytes: bytes, nivel_cognitivo: str = "estándar") -> Dict[str, str]:
-    """Describe una imagen usando algoritmos de visión por computadora."""
+def describir_imagen_con_blip(imagen_bytes: bytes) -> str:
+    """Describe el CONTENIDO REAL de la imagen usando BLIP."""
     
     try:
         imagen = Image.open(io.BytesIO(imagen_bytes))
         
-        # Análisis mejorado
-        color = obtener_color_dominante(imagen)
-        brillo = analizar_brillo(imagen)
-        composicion = analizar_composicion(imagen)
-        contraste = analizar_contraste(imagen)
-        formas = detectar_formas_simples(imagen)
-        distribucion = analizar_distribucion(imagen)
-        textos = detectar_texto_simple(imagen)
-        
-        # Generar descripción rica en contexto
-        if nivel_cognitivo == "simplificada":
-            # Versión simplificada
-            descripcion = f"Imagen {composicion}. "
-            descripcion += f"Color principal: {color}. "
-            descripcion += f"Iluminación: {brillo}. "
-            if textos:
-                descripcion += f"Tiene {textos[0]}. "
-        else:
-            # Versión detallada
-            descripcion = f"Esta es una imagen de composición {composicion}. "
-            
-            # Información de color con contexto
-            if color in ['blanco', 'negro', 'gris claro', 'gris oscuro']:
-                descripcion += f"Predominan tonos {color} y neutros, "
-            else:
-                descripcion += f"El color predominante es el {color}, "
+        # ============================================================
+        # USAR BLIP PARA DESCRIBIR EL CONTENIDO REAL
+        # ============================================================
+        if BLIP_DISPONIBLE and model is not None and processor is not None:
+            try:
+                # Procesar imagen con BLIP
+                inputs = processor(imagen, return_tensors="pt")
                 
-            descripcion += f"con iluminación {brillo} y {contraste}. "
-            
-            # Añadir información de formas
-            if formas and formas != "formas básicas":
-                descripcion += f"Se observan {formas}. "
-            
-            # Añadir distribución
-            descripcion += distribucion
-            
-            # Añadir texto detectado
-            if textos:
-                descripcion += f" Se detecta {', '.join(textos)}. "
+                # Generar descripción
+                with torch.no_grad():
+                    out = model.generate(
+                        **inputs, 
+                        max_length=50, 
+                        num_beams=4,
+                        temperature=0.7
+                    )
+                    descripcion = processor.decode(out[0], skip_special_tokens=True)
+                
+                if descripcion:
+                    print(f"📝 BLIP: {descripcion}")
+                    return descripcion
+                    
+            except Exception as e:
+                print(f"❌ Error en BLIP: {e}")
+                # Si BLIP falla, usar fallback
         
-        # Detalles adicionales
-        ancho, alto = imagen.size
-        if ancho > 1920 or alto > 1080:
-            descripcion += "Es una imagen de alta resolución. "
-        elif ancho < 640 and alto < 480:
-            descripcion += "Es una imagen de baja resolución. "
+        # ============================================================
+        # FALLBACK: DESCRIPCIÓN TÉCNICA (solo si BLIP no funciona)
+        # ============================================================
+        color = "desconocido"
+        try:
+            img_pequena = imagen.resize((50, 50))
+            colores = img_pequena.getcolors(2500)
+            if colores:
+                colores_ordenados = sorted(colores, key=lambda x: x[0], reverse=True)
+                r, g, b = colores_ordenados[0][1]
+                if r > 200 and g > 200 and b > 200:
+                    color = "blanco"
+                elif r < 50 and g < 50 and b < 50:
+                    color = "negro"
+                elif r > 200 and g < 100 and b < 100:
+                    color = "rojo"
+                elif r < 100 and g > 200 and b < 100:
+                    color = "verde"
+                elif r < 100 and g < 100 and b > 200:
+                    color = "azul"
+        except:
+            pass
         
-        # Limpiar descripción
-        descripcion = descripcion.replace("  ", " ").strip()
-        
-        return {
-            "descripcion": descripcion,
-            "detalles": {
-                "color": color,
-                "brillo": brillo,
-                "composicion": composicion,
-                "contraste": contraste,
-                "formas": formas,
-                "texto_detectado": bool(textos),
-                "dimensiones": f"{ancho}x{alto}"
-            }
-        }
+        return f"Imagen con colores predominantes {color}. (Descripción de contenido no disponible)"
         
     except Exception as e:
         print(f"❌ Error en análisis: {e}")
-        return {
-            "descripcion": "No se pudo analizar la imagen correctamente.",
-            "detalles": {}
-        }
+        return "No se pudo analizar la imagen."
 
 # ============================================================
 # FUNCIONES AUXILIARES
@@ -347,106 +173,6 @@ def generar_imagen_ia(prompt: str, ruta_salida: Path) -> Path:
     respuesta.raise_for_status()
     ruta_salida.write_bytes(respuesta.content)
     return ruta_salida
-
-def traducir_texto_simple(texto: str, idioma_destino: str) -> str:
-    """Traducción simple (para demostración)."""
-    # Mapeo básico de palabras comunes
-    traducciones = {
-        "inglés": {
-            "color": "color",
-            "colores": "colors",
-            "brillo": "brightness",
-            "composicion": "composition",
-            "contraste": "contrast",
-            "horizontal": "horizontal",
-            "vertical": "vertical",
-            "cuadrada": "square",
-            "blanco": "white",
-            "negro": "black",
-            "rojo": "red",
-            "verde": "green",
-            "azul": "blue",
-            "amarillo": "yellow",
-            "naranja": "orange",
-            "morado": "purple",
-            "gris": "gray",
-            "claro": "light",
-            "oscuro": "dark",
-            "imagen": "image",
-            "escena": "scene",
-            "elementos": "elements",
-            "luminosidad": "luminosity",
-            "media": "medium"
-        },
-        "francés": {
-            "color": "couleur",
-            "colores": "couleurs",
-            "brillo": "luminosité",
-            "composicion": "composition",
-            "contraste": "contraste",
-            "blanco": "blanc",
-            "negro": "noir",
-            "rojo": "rouge",
-            "verde": "vert",
-            "azul": "bleu",
-            "amarillo": "jaune",
-            "imagen": "image",
-            "escena": "scène"
-        },
-        "alemán": {
-            "color": "Farbe",
-            "colores": "Farben",
-            "brillo": "Helligkeit",
-            "composicion": "Zusammensetzung",
-            "contraste": "Kontrast",
-            "blanco": "weiß",
-            "negro": "schwarz",
-            "rojo": "rot",
-            "verde": "grün",
-            "azul": "blau",
-            "amarillo": "gelb",
-            "imagen": "Bild",
-            "escena": "Szene"
-        },
-        "italiano": {
-            "color": "colore",
-            "colores": "colori",
-            "brillo": "luminosità",
-            "composicion": "composizione",
-            "contraste": "contrasto",
-            "blanco": "bianco",
-            "negro": "nero",
-            "rojo": "rosso",
-            "verde": "verde",
-            "azul": "blu",
-            "amarillo": "giallo",
-            "imagen": "immagine",
-            "escena": "scena"
-        },
-        "portugués": {
-            "color": "cor",
-            "colores": "cores",
-            "brillo": "brilho",
-            "composicion": "composição",
-            "contraste": "contraste",
-            "blanco": "branco",
-            "negro": "preto",
-            "rojo": "vermelho",
-            "verde": "verde",
-            "azul": "azul",
-            "amarillo": "amarelo",
-            "imagen": "imagem",
-            "escena": "cena"
-        }
-    }
-    
-    # Traducción básica
-    if idioma_destino in traducciones:
-        for es, translated in traducciones[idioma_destino].items():
-            texto = texto.replace(es, translated)
-        return texto
-    
-    return f"[{idioma_destino}] {texto}"
 
 # ============================================================
 # PROCESAMIENTO PRINCIPAL
@@ -479,23 +205,18 @@ def procesar_todo_inclusivo(
         with open(ruta_imagen, "rb") as f:
             imagen_bytes = f.read()
 
-    # Analizar imagen con algoritmos mejorados
-    resultado_analisis = describir_imagen_con_algoritmos(imagen_bytes, nivel_cognitivo)
-    descripcion_es = resultado_analisis["descripcion"]
+    # DESCRIBIR CON BLIP (CONTENIDO REAL)
+    descripcion_es = describir_imagen_con_blip(imagen_bytes)
     
     descripciones = {}
     if "es" in idiomas_elegidos:
         descripciones["es"] = descripcion_es
 
-    # Traducciones
+    # Traducciones (simplificadas)
     for codigo in idiomas_elegidos:
         if codigo == "es":
             continue
-        if incluir_traduccion:
-            nombre_largo = IDIOMAS.get(codigo, {}).get("traduccion", codigo)
-            descripciones[codigo] = traducir_texto_simple(descripcion_es, nombre_largo)
-        else:
-            descripciones[codigo] = descripcion_es
+        descripciones[codigo] = descripcion_es  # Por ahora igual
 
     # Generar audios
     audios = {}
@@ -511,7 +232,7 @@ def procesar_todo_inclusivo(
         "descripciones": descripciones,
         "audios": audios,
         "nivel_cognitivo": nivel_cognitivo,
-        "detalles_analisis": resultado_analisis.get("detalles", {})
+        "modelo_usado": "BLIP" if BLIP_DISPONIBLE else "Fallback",
     }
 
 # ============================================================
@@ -523,7 +244,7 @@ def index():
     return render_template(
         "index.html",
         idiomas=IDIOMAS,
-        api_configurada=True,
+        api_configurada=BLIP_DISPONIBLE,
         en_produccion=EN_PRODUCCION,
         error=None,
         resultado=None,
@@ -534,6 +255,7 @@ def index():
             "prompt": "Una cocina luminosa con dos personas cocinando",
             "traducir": False
         },
+        blip_disponible=BLIP_DISPONIBLE
     )
 
 @app.route("/generar", methods=["POST"])
@@ -563,83 +285,68 @@ def generar():
             for codigo, nombre in resultado["audios"].items()
         }
         return render_template(
-            "index.html", idiomas=IDIOMAS, api_configurada=True,
+            "index.html", idiomas=IDIOMAS, api_configurada=BLIP_DISPONIBLE,
             en_produccion=EN_PRODUCCION,
             error=None, resultado=resultado, valores=valores,
+            blip_disponible=BLIP_DISPONIBLE
         )
     except Exception as exc:
         error_amigable = f"No se pudo completar el proceso: {exc}"
         return render_template(
-            "index.html", idiomas=IDIOMAS, api_configurada=True,
+            "index.html", idiomas=IDIOMAS, api_configurada=BLIP_DISPONIBLE,
             en_produccion=EN_PRODUCCION,
             error=error_amigable,
             resultado=None, valores=valores,
+            blip_disponible=BLIP_DISPONIBLE
         )
 
 # ============================================================
-# RUTAS DE CÁMARA EN VIVO (NUEVO)
+# RUTAS DE CÁMARA EN VIVO
 # ============================================================
 
 @app.route('/api/camara/estado', methods=['GET'])
 def estado_camara():
-    """Verifica el estado del servicio de cámara."""
     return jsonify({
         'activo': True,
-        'modo': 'algoritmos_cv',
+        'modo': 'BLIP' if BLIP_DISPONIBLE else 'Fallback',
         'gratuito': True,
-        'modelo': 'Pillow + gTTS',
-        'version': '1.0.0',
-        'caracteristicas': [
-            'Detección de colores',
-            'Análisis de brillo',
-            'Detección de formas',
-            'Análisis de composición',
-            'Generación de audio'
-        ]
+        'modelo': 'BLIP (descripciones de contenido real)' if BLIP_DISPONIBLE else 'Análisis básico',
+        'version': '2.0.0',
+        'blip_disponible': BLIP_DISPONIBLE
     })
 
 @app.route('/api/camara/stream', methods=['POST'])
 def procesar_stream_camara():
-    """Procesa fotogramas de la cámara en tiempo real."""
+    """Procesa fotogramas con BLIP para descripciones de CONTENIDO REAL."""
     try:
         data = request.get_json()
         if not data or 'imagen' not in data:
             return jsonify({'error': 'No se recibió imagen'}), 400
 
-        # Verificar rate limit
+        # Rate limit
         ip_usuario = request.remote_addr or "default"
         puede_proceder, tiempo_espera = verificar_limite_solicitudes(ip_usuario)
-        
         if not puede_proceder:
             return jsonify({
                 'error': 'rate_limit',
                 'mensaje': f'Espera {tiempo_espera} segundos'
             }), 429
 
-        # Decodificar imagen base64
+        # Decodificar imagen
         image_data = data['imagen']
         if ',' in image_data:
             _, encoded = image_data.split(',', 1)
         else:
             encoded = image_data
-            
         image_bytes = base64.b64decode(encoded)
         
-        # Analizar con algoritmos mejorados
-        nivel = data.get('nivel', 'estándar')
-        resultado = describir_imagen_con_algoritmos(image_bytes, nivel)
-        descripcion = resultado["descripcion"]
-        
-        # Si modo detallado, añadir más información
-        if data.get('detalle', False) and resultado.get("detalles"):
-            detalles = resultado["detalles"]
-            descripcion += f" Detalles técnicos: color {detalles['color']}, {detalles['brillo']}, {detalles['contrase']}."
+        # DESCRIBIR CON BLIP (CONTENIDO REAL)
+        descripcion = describir_imagen_con_blip(image_bytes)
         
         # Generar audio
         session_id = uuid.uuid4().hex[:8]
         audio_path = GENERATED_DIR / f"{session_id}_camara.mp3"
         
-        # Obtener idioma para el audio
         idioma = data.get('idioma', 'es')
         idioma_gtts = IDIOMAS.get(idioma, {}).get("gtts", "es")
         
@@ -649,7 +356,7 @@ def procesar_stream_camara():
         with open(audio_path, "rb") as f:
             audio_base64 = base64.b64encode(f.read()).decode('utf-8')
         
-        # Limpiar archivo temporal (después de enviar)
+        # Limpiar archivo temporal
         try:
             os.remove(audio_path)
         except:
@@ -659,96 +366,33 @@ def procesar_stream_camara():
             'descripcion': descripcion,
             'audio': audio_base64,
             'timestamp': datetime.now().isoformat(),
-            'detalles': resultado.get("detalles", {})
+            'modelo': 'BLIP' if BLIP_DISPONIBLE else 'Fallback'
         })
         
     except Exception as e:
         print(f"❌ Error en stream: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/camara/analizar', methods=['POST'])
-def analizar_fotograma():
-    """Endpoint alternativo para análisis sin audio."""
-    try:
-        data = request.get_json()
-        if not data or 'imagen' not in data:
-            return jsonify({'error': 'No se recibió imagen'}), 400
-
-        # Decodificar imagen
-        image_data = data['imagen']
-        if ',' in image_data:
-            _, encoded = image_data.split(',', 1)
-        else:
-            encoded = image_data
-            
-        image_bytes = base64.b64decode(encoded)
-        
-        # Analizar
-        resultado = describir_imagen_con_algoritmos(image_bytes, data.get('nivel', 'estándar'))
-        
-        return jsonify({
-            'descripcion': resultado["descripcion"],
-            'detalles': resultado.get("detalles", {}),
-            'timestamp': datetime.now().isoformat()
-        })
-        
-    except Exception as e:
-        print(f"❌ Error en análisis: {e}")
-        return jsonify({'error': str(e)}), 500
-
-# ============================================================
-# RUTAS DE UTILIDAD
-# ============================================================
-
 @app.route('/api/estado', methods=['GET'])
 def estado_sistema():
     return jsonify({
         'modelo': {
-            'nombre': 'Algoritmos de Visión por Computadora',
+            'nombre': 'BLIP' if BLIP_DISPONIBLE else 'Fallback',
             'gratuito': True,
-            'memoria_mb': '< 100',
-            'tipo': 'Pillow + algoritmos',
-            'caracteristicas': [
-                'Análisis de color',
-                'Detección de brillo',
-                'Análisis de composición',
-                'Detección de formas',
-                'Análisis de contraste',
-                'Detección de texto básica'
-            ]
+            'memoria_mb': '< 500' if BLIP_DISPONIBLE else '< 100',
+            'tipo': 'IA para descripción de contenido',
+            'blip_disponible': BLIP_DISPONIBLE,
+            'descripcion_contenido_real': BLIP_DISPONIBLE
         },
         'camara': {
             'activa': True,
             'gratuita': True,
-            'fps': 0.33,  # 1 captura cada 3 segundos
-            'formato': 'JPEG'
+            'fps': 0.33
         },
         'produccion': EN_PRODUCCION,
-        'rate_limit': {'minimo_segundos': TIEMPO_MINIMO_ENTRE_SOLICITUDES},
         'idiomas': list(IDIOMAS.keys()),
         'version': '2.0.0'
     })
-
-@app.route('/api/limpiar-temporales', methods=['POST'])
-def limpiar_temporales():
-    """Limpia archivos temporales antiguos."""
-    try:
-        # Eliminar archivos de audio más antiguos que 1 hora
-        ahora = time.time()
-        eliminados = 0
-        for archivo in GENERATED_DIR.glob("*_camara.mp3"):
-            if ahora - archivo.stat().st_mtime > 3600:  # 1 hora
-                try:
-                    os.remove(archivo)
-                    eliminados += 1
-                except:
-                    pass
-        return jsonify({
-            'success': True,
-            'eliminados': eliminados
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 # ============================================================
 # EJECUCIÓN
@@ -756,9 +400,9 @@ def limpiar_temporales():
 
 if __name__ == '__main__':
     print("🚀 Voz Visible iniciado")
-    print(f"🖼️ Modelo: Algoritmos de Visión por Computadora (sin API)")
-    print(f"📷 Cámara en vivo: ACTIVADA (gratuita)")
-    print(f"💾 Memoria estimada: < 100 MB")
+    print(f"🖼️ Modelo: {'BLIP (descripciones de CONTENIDO REAL)' if BLIP_DISPONIBLE else 'Fallback (solo formato)'}")
+    print(f"📷 Cámara en vivo: ACTIVADA")
+    print(f"💾 Memoria estimada: {'~500 MB' if BLIP_DISPONIBLE else '< 100 MB'}")
     print(f"🌐 Entorno: {'Producción' if EN_PRODUCCION else 'Desarrollo'}")
     print("")
     
