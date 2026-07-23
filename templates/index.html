@@ -10,7 +10,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
-<body>
+<body data-produccion="{{ 'true' if en_produccion else 'false' }}">
     <a href="#formulario" class="skip-link">Saltar al formulario</a>
 
     <header class="site">
@@ -48,13 +48,26 @@
             </div>
         </section>
 
+        <!-- ============================================================
+             MENSAJE DE ERROR CUANDO NO HAY API KEY CONFIGURADA (GROK)
+             ============================================================ -->
         {% if not api_configurada %}
         <section>
             <div class="wrap">
                 <div class="error-box" role="alert">
-                    Esta instalación todavía no tiene configurada la clave de Gemini
-                    (<code>GEMINI_API_KEY</code> en el archivo <code>.env</code> del servidor).
-                    Pídeselo a la persona que administra esta página; el formulario no funcionará hasta entonces.
+                    <strong>⚠️ Configuración pendiente</strong><br>
+                    Esta instalación todavía no tiene configurada la clave de Grok 
+                    (<code>GROK_API_KEY</code> en el archivo <code>.env</code> del servidor).
+                    <br><br>
+                    Para obtener una clave:
+                    <ol style="margin: 10px 0 0 20px; padding-left: 20px;">
+                        <li>Ve a <a href="https://console.x.ai/" target="_blank">https://console.x.ai/</a></li>
+                        <li>Regístrate o inicia sesión con tu cuenta de X</li>
+                        <li>Crea una nueva API Key en la sección "API Keys"</li>
+                        <li>Copia la clave y pídesela al administrador del servidor</li>
+                    </ol>
+                    <br>
+                    <em>El formulario no funcionará hasta que se configure la clave.</em>
                 </div>
             </div>
         </section>
@@ -184,8 +197,8 @@
                     </div>
                     <div class="step">
                         <p class="num">02</p>
-                        <h3>Gemini la describe</h3>
-                        <p>Un modelo de visión escribe una descripción objetiva en el nivel de lectura elegido, y la traduce si lo pides.</p>
+                        <h3>Grok la describe</h3>
+                        <p>El modelo de visión de xAI (Grok) escribe una descripción objetiva en el nivel de lectura elegido, y la traduce si lo pides.</p>
                     </div>
                     <div class="step">
                         <p class="num">03</p>
@@ -200,7 +213,7 @@
             <div class="wrap">
                 <div class="section-head">
                     <h2>Análisis de entorno en tiempo real</h2>
-                    <p>Activa la cámara para describir tu entorno en vivo.</p>
+                    <p>Activa la cámara para describir tu entorno en vivo con Grok Vision.</p>
                 </div>
                 
                 <div class="studio-grid">
@@ -212,8 +225,9 @@
                             </div>
                             
                             <div class="controls">
-                                <button id="btnStart" class="btn btn-primary">Iniciar Cámara</button>
+                                <button id="btnStart" class="btn btn-primary" {% if en_produccion %}disabled{% endif %}>Iniciar Cámara</button>
                                 <button id="btnStop" class="btn btn-ghost" disabled>Detener</button>
+                                <button id="btnDetalle" class="btn btn-secondary" disabled>🔬 Análisis detallado</button>
                             </div>
                         </div>
                     </div>
@@ -225,7 +239,13 @@
                             <span id="statusText">Sistema inactivo</span>
                         </div>
                         <div class="description-box">
-                            <p id="descripcionText">Presiona "Iniciar Cámara" para comenzar a describir tu entorno...</p>
+                            <p id="descripcionText">
+                                {% if en_produccion %}
+                                📌 La cámara en vivo no está disponible en producción.
+                                {% else %}
+                                Presiona "Iniciar Cámara" para comenzar a describir tu entorno...
+                                {% endif %}
+                            </p>
                         </div>
                     </div>
                 </div>
@@ -243,7 +263,7 @@
                         <h3>En local</h3>
                         <ol>
                             <li><code>pip install -r requirements.txt</code></li>
-                            <li>Copia <code>.env.example</code> a <code>.env</code> y añade tu <code>GEMINI_API_KEY</code></li>
+                            <li>Copia <code>.env.example</code> a <code>.env</code> y añade tu <code>GROK_API_KEY</code></li>
                             <li><code>python app.py</code> y abre <code>http://localhost:5000</code></li>
                         </ol>
                     </div>
@@ -251,7 +271,7 @@
                         <h3>En un servidor (producción)</h3>
                         <ol>
                             <li>Sube la carpeta del proyecto</li>
-                            <li>Define la variable de entorno <code>GEMINI_API_KEY</code> en el panel del hosting</li>
+                            <li>Define la variable de entorno <code>GROK_API_KEY</code> en el panel del hosting</li>
                             <li>Arranca con <code>gunicorn app:app</code></li>
                         </ol>
                     </div>
@@ -262,149 +282,10 @@
 
     <footer>
         <div class="wrap">
-            <p>Voz Visible — construida con Flask, Gemini (descripción y traducción), gTTS (voz) y Pollinations.ai (imagen). Los archivos generados se guardan en <code>static/generated/</code> en el servidor.</p>
+            <p>Voz Visible — construida con Flask, Grok (xAI) para descripción y traducción, gTTS para voz y Pollinations.ai para imagen. Los archivos generados se guardan en <code>static/generated/</code> en el servidor.</p>
         </div>
     </footer>
 
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
-    <script>
-        // JavaScript para el funcionamiento de la cámara y descripción en tiempo real
-        document.addEventListener('DOMContentLoaded', function() {
-            const video = document.getElementById('webcam');
-            const canvas = document.getElementById('canvas');
-            const btnStart = document.getElementById('btnStart');
-            const btnStop = document.getElementById('btnStop');
-            const statusDot = document.getElementById('statusDot');
-            const statusText = document.getElementById('statusText');
-            const descripcionText = document.getElementById('descripcionText');
-            
-            let stream = null;
-            let intervalId = null;
-            let isRunning = false;
-
-            // Función para actualizar el estado
-            function setStatus(active, message) {
-                if (active) {
-                    statusDot.className = 'dot active';
-                    statusText.textContent = message || 'Sistema activo';
-                } else {
-                    statusDot.className = 'dot inactive';
-                    statusText.textContent = message || 'Sistema inactivo';
-                }
-            }
-
-            // Función para capturar y procesar imagen
-            function captureAndProcess() {
-                if (!isRunning) return;
-                
-                try {
-                    canvas.width = video.videoWidth || 640;
-                    canvas.height = video.videoHeight || 480;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    
-                    // Convertir a base64
-                    const imageData = canvas.toDataURL('image/jpeg', 0.8);
-                    
-                    // Enviar al servidor
-                    fetch('/analizar-imagen', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({ imagen: imageData })
-                    })
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.descripcion) {
-                            descripcionText.textContent = data.descripcion;
-                            setStatus(true, 'Analizando entorno...');
-                        }
-                    })
-                    .catch(error => {
-                        console.error('Error:', error);
-                        descripcionText.textContent = 'Error al analizar la imagen. Reintentando...';
-                    });
-                } catch (error) {
-                    console.error('Error capturando imagen:', error);
-                }
-            }
-
-            // Iniciar cámara
-            btnStart.addEventListener('click', async function() {
-                try {
-                    stream = await navigator.mediaDevices.getUserMedia({ 
-                        video: { 
-                            facingMode: 'environment',
-                            width: { ideal: 640 },
-                            height: { ideal: 480 }
-                        } 
-                    });
-                    
-                    video.srcObject = stream;
-                    await video.play();
-                    
-                    isRunning = true;
-                    btnStart.disabled = true;
-                    btnStop.disabled = false;
-                    setStatus(true, 'Cámara activa');
-                    descripcionText.textContent = 'Analizando entorno...';
-                    
-                    // Capturar cada 3 segundos
-                    if (intervalId) clearInterval(intervalId);
-                    intervalId = setInterval(captureAndProcess, 3000);
-                    
-                    // Capturar inmediatamente
-                    setTimeout(captureAndProcess, 500);
-                    
-                } catch (error) {
-                    console.error('Error al acceder a la cámara:', error);
-                    setStatus(false, 'Error al acceder a la cámara');
-                    descripcionText.textContent = 'No se pudo acceder a la cámara. Verifica los permisos.';
-                    btnStart.disabled = false;
-                }
-            });
-
-            // Detener cámara
-            btnStop.addEventListener('click', function() {
-                if (intervalId) {
-                    clearInterval(intervalId);
-                    intervalId = null;
-                }
-                
-                if (stream) {
-                    stream.getTracks().forEach(track => track.stop());
-                    stream = null;
-                }
-                
-                video.srcObject = null;
-                isRunning = false;
-                btnStart.disabled = false;
-                btnStop.disabled = true;
-                setStatus(false, 'Sistema detenido');
-                descripcionText.textContent = 'Presiona "Iniciar Cámara" para comenzar a describir tu entorno...';
-            });
-
-            // Funcionalidades de accesibilidad
-            let currentFontSize = 1;
-            let isHighContrast = false;
-
-            document.getElementById('btn-font-mas').addEventListener('click', function() {
-                currentFontSize = Math.min(currentFontSize + 0.1, 1.5);
-                document.body.style.fontSize = currentFontSize + 'em';
-            });
-
-            document.getElementById('btn-font-menos').addEventListener('click', function() {
-                currentFontSize = Math.max(currentFontSize - 0.1, 0.8);
-                document.body.style.fontSize = currentFontSize + 'em';
-            });
-
-            document.getElementById('btn-contraste').addEventListener('click', function() {
-                isHighContrast = !isHighContrast;
-                document.body.classList.toggle('high-contrast');
-                this.setAttribute('aria-pressed', isHighContrast);
-            });
-        });
-    </script>
 </body>
 </html>
