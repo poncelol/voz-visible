@@ -4,10 +4,12 @@
 # ============================================================
 
 import os
+import sys
 import uuid
 import base64
 import time
 import io
+import json
 from pathlib import Path
 from urllib.parse import quote
 from datetime import datetime
@@ -19,14 +21,25 @@ from flask import Flask, render_template, request, url_for, jsonify
 from gtts import gTTS
 from PIL import Image
 
-# Importar BLIP
-from transformers import BlipProcessor, BlipForConditionalGeneration
+# Importar BLIP (intentaremos cargarlo, pero si falla, usamos modo respaldo)
+BLIP_DISPONIBLE = False
+try:
+    from transformers import BlipProcessor, BlipForConditionalGeneration
+    BLIP_DISPONIBLE = True
+except ImportError:
+    print("⚠️ BLIP no disponible. Usando modo de respaldo con tags.")
 
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 GENERATED_DIR = BASE_DIR / "static" / "generated"
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+# Detección de entorno de producción
+EN_PRODUCCION = os.environ.get('RENDER') == 'true'
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
@@ -36,16 +49,24 @@ app.secret_key = os.environ.get("SECRET_KEY", "tu-clave-secreta-aqui")
 # CARGAR MODELO BLIP (GRATUITO)
 # ============================================================
 print("🔄 Cargando modelo BLIP (puede tardar unos segundos la primera vez)...")
-try:
-    processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-    model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
-    MODELO_CARGADO = True
-    print("✅ Modelo BLIP cargado correctamente")
-except Exception as e:
-    print(f"❌ Error cargando BLIP: {e}")
-    MODELO_CARGADO = False
+MODELO_CARGADO = False
+processor = None
+model = None
 
-EN_PRODUCCION = os.environ.get('RENDER') == 'true' or os.environ.get('PORT') is not None
+if BLIP_DISPONIBLE and not EN_PRODUCCION:
+    try:
+        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        MODELO_CARGADO = True
+        print("✅ Modelo BLIP cargado correctamente")
+    except Exception as e:
+        print(f"❌ Error cargando BLIP: {e}")
+        MODELO_CARGADO = False
+else:
+    if EN_PRODUCCION:
+        print("ℹ️ Modo producción: usando modo de respaldo con tags para ahorrar recursos")
+    else:
+        print("ℹ️ BLIP no instalado. Usando modo de respaldo con tags.")
 
 # ============================================================
 # IDIOMAS
@@ -58,6 +79,46 @@ IDIOMAS = {
     "it": {"nombre": "Italiano", "traduccion": "italiano", "gtts": "it"},
     "pt": {"nombre": "Portugués", "traduccion": "portugués", "gtts": "pt"},
 }
+
+# ============================================================
+# PROMPTS
+# ============================================================
+PROMPT_AUDIODESCRIPCION_ESTANDAR = """
+Describe esta imagen para una persona ciega o con baja visión.
+Sigue estas reglas:
+1. Máximo 4 frases, lenguaje claro y directo.
+2. Empieza por lo más importante en primer plano.
+3. Menciona después elementos relevantes del fondo.
+4. Incluye colores y detalles visuales solo si aportan información útil.
+5. Si hay texto visible en la imagen, transcríbelo.
+6. No hagas interpretaciones subjetivas.
+"""
+
+PROMPT_AUDIODESCRIPCION_SIMPLIFICADA = """
+Describe esta imagen de forma MUY SIMPLE.
+Reglas:
+1. MÁXIMO 3 frases muy cortas.
+2. Usa palabras comunes.
+3. Empieza diciendo QUÉ es lo principal.
+4. Di DÓNDE están las cosas.
+5. Si hay colores importantes, menciónalos.
+6. Si hay texto, transcríbelo tal cual.
+"""
+
+PROMPT_CAMARA_EN_VIVO = """
+Describe de forma breve (1-2 oraciones) lo que ves en esta imagen de cámara.
+Enfócate en elementos principales: personas, objetos, colores y acciones.
+Responde SOLO con la descripción.
+"""
+
+PROMPT_ANALISIS_DETALLADO_CAMARA = """
+Analiza esta escena con más detalle (3-4 oraciones):
+1. Personas presentes (cuántas, qué hacen)
+2. Objetos principales y ubicación
+3. Ambiente general
+4. Texto visible
+Responde SOLO con la descripción.
+"""
 
 # ============================================================
 # FUNCIONES DE CONTROL
@@ -81,20 +142,25 @@ def describir_imagen_blip(imagen_bytes: bytes, prompt_texto: str = "") -> str:
     """Genera descripción de imagen usando BLIP (gratuito, sin API)."""
     
     if not MODELO_CARGADO:
-        return "⚠️ El modelo BLIP no está disponible. Usa el modo de respaldo."
+        return None
     
     try:
         # Abrir imagen
         imagen = Image.open(io.BytesIO(imagen_bytes))
         
-        # Si hay prompt personalizado, usarlo, si no, descripción automática
+        # Redimensionar para mejor rendimiento
+        max_size = 600
+        if max(imagen.size) > max_size:
+            ratio = max_size / max(imagen.size)
+            new_size = (int(imagen.size[0] * ratio), int(imagen.size[1] * ratio))
+            imagen = imagen.resize(new_size, Image.Resampling.LANCZOS)
+        
+        # Generar descripción
         if prompt_texto:
-            # BLIP también puede usar prompts para guiar la descripción
             inputs = processor(imagen, prompt_texto, return_tensors="pt")
         else:
             inputs = processor(imagen, return_tensors="pt")
         
-        # Generar descripción
         out = model.generate(**inputs, max_length=60, num_beams=4, temperature=0.7)
         descripcion = processor.decode(out[0], skip_special_tokens=True)
         
@@ -102,7 +168,7 @@ def describir_imagen_blip(imagen_bytes: bytes, prompt_texto: str = "") -> str:
         
     except Exception as e:
         print(f"❌ Error en BLIP: {e}")
-        return f"Error al describir: {str(e)}"
+        return None
 
 # ============================================================
 # FUNCIÓN DE DESCRIPCIÓN CON TAGS (RESPALDO)
@@ -110,20 +176,16 @@ def describir_imagen_blip(imagen_bytes: bytes, prompt_texto: str = "") -> str:
 def describir_imagen_tags(imagen_bytes: bytes) -> str:
     """Versión de respaldo que usa tags básicos de la imagen."""
     try:
-        from PIL import Image, ImageFilter
-        import colorsys
-        
         imagen = Image.open(io.BytesIO(imagen_bytes))
         
         # Obtener colores dominantes
         imagen_pequena = imagen.resize((50, 50))
         colores = imagen_pequena.getcolors(2500)
+        
+        colores_principales = []
         if colores:
-            # Ordenar por frecuencia
             colores_ordenados = sorted(colores, key=lambda x: x[0], reverse=True)
-            colores_principales = []
             for count, rgb in colores_ordenados[:3]:
-                # Convertir RGB a nombre de color básico
                 r, g, b = rgb
                 if r > 200 and g > 200 and b > 200:
                     nombre_color = "claro"
@@ -158,6 +220,24 @@ def describir_imagen_tags(imagen_bytes: bytes) -> str:
         return "No se pudo describir la imagen."
 
 # ============================================================
+# FUNCIÓN DE DESCRIPCIÓN PRINCIPAL
+# ============================================================
+def describir_imagen(imagen_bytes: bytes, prompt_texto: str = "") -> str:
+    """Intenta usar BLIP, si falla usa tags."""
+    
+    descripcion = None
+    
+    # Intentar con BLIP
+    if MODELO_CARGADO:
+        descripcion = describir_imagen_blip(imagen_bytes, prompt_texto)
+    
+    # Si BLIP falla o no está disponible, usar tags
+    if descripcion is None or len(descripcion) < 10:
+        descripcion = describir_imagen_tags(imagen_bytes)
+    
+    return descripcion
+
+# ============================================================
 # FUNCIONES AUXILIARES
 # ============================================================
 def generar_audio(texto: str, ruta_salida: Path, idioma_gtts: str = "es") -> None:
@@ -178,11 +258,26 @@ def generar_imagen_ia(prompt: str, ruta_salida: Path) -> Path:
 
 def traducir_texto_simple(texto: str, idioma_destino: str) -> str:
     """Traducción simple sin API (solo para demostración)."""
-    # Esta es una traducción muy básica para demostración
-    # En producción, usarías una biblioteca como googletrans o deep-translator
-    if idioma_destino == "español":
+    # Mapeo básico de idiomas
+    traducciones = {
+        "inglés": {
+            "cocina": "kitchen",
+            "personas": "people",
+            "cocinan": "are cooking",
+            "mujer": "woman",
+            "hombre": "man",
+            "luminosa": "bright",
+            "olla": "pot",
+            "verduras": "vegetables"
+        }
+    }
+    
+    if idioma_destino in traducciones:
+        for es, en in traducciones[idioma_destino].items():
+            texto = texto.replace(es, en)
         return texto
-    # Por ahora, solo devolvemos el texto original con un indicador
+    
+    # Si no hay traducción, devolvemos el texto original con indicador
     return f"[{idioma_destino}] {texto}"
 
 # ============================================================
@@ -214,12 +309,9 @@ def procesar_todo_inclusivo(
         with open(ruta_imagen, "rb") as f:
             imagen_bytes = f.read()
 
-    # Describir con BLIP o con tags de respaldo
-    if MODELO_CARGADO:
-        descripcion_es = describir_imagen_blip(imagen_bytes, prompt_imagen or "")
-    else:
-        descripcion_es = describir_imagen_tags(imagen_bytes)
-
+    # Describir imagen
+    descripcion_es = describir_imagen(imagen_bytes, prompt_imagen or "")
+    
     # Si está vacía o es muy corta, usar tags como respaldo
     if len(descripcion_es) < 10:
         descripcion_tags = describir_imagen_tags(imagen_bytes)
@@ -230,7 +322,7 @@ def procesar_todo_inclusivo(
     if "es" in idiomas_elegidos:
         descripciones["es"] = descripcion_es
 
-    # Traducciones (usando función simple por ahora)
+    # Traducciones
     for codigo in idiomas_elegidos:
         if codigo == "es":
             continue
@@ -264,7 +356,7 @@ def index():
     return render_template(
         "index.html",
         idiomas=IDIOMAS,
-        api_configurada=MODELO_CARGADO,  # BLIP siempre "configurado" si cargó
+        api_configurada=True,  # Siempre True porque no necesita API
         en_produccion=EN_PRODUCCION,
         error=None,
         resultado=None,
@@ -304,14 +396,14 @@ def generar():
             for codigo, nombre in resultado["audios"].items()
         }
         return render_template(
-            "index.html", idiomas=IDIOMAS, api_configurada=MODELO_CARGADO,
+            "index.html", idiomas=IDIOMAS, api_configurada=True,
             en_produccion=EN_PRODUCCION,
             error=None, resultado=resultado, valores=valores,
         )
     except Exception as exc:
         error_amigable = f"No se pudo completar el proceso: {exc}"
         return render_template(
-            "index.html", idiomas=IDIOMAS, api_configurada=MODELO_CARGADO,
+            "index.html", idiomas=IDIOMAS, api_configurada=True,
             en_produccion=EN_PRODUCCION,
             error=error_amigable,
             resultado=None, valores=valores,
@@ -319,7 +411,7 @@ def generar():
 
 @app.route('/analizar-camara', methods=['POST'])
 def analizar_camara():
-    """Analiza un fotograma de cámara con BLIP."""
+    """Analiza un fotograma de cámara con BLIP o tags."""
     
     try:
         data = request.get_json()
@@ -353,10 +445,18 @@ def analizar_camara():
                 'mensaje': f'Espera {tiempo_espera} segundos'
             }), 429
 
-        # Analizar con BLIP
-        if MODALIDAD_CAMARA:
-            descripcion = describir_imagen_blip(image_bytes, "Describe what you see in this photo")
+        # Analizar imagen
+        if modo_detalle:
+            prompt = PROMPT_ANALISIS_DETALLADO_CAMARA
         else:
+            prompt = PROMPT_CAMARA_EN_VIVO
+
+        print(f"📷 Analizando fotograma... (modo: {'detallado' if modo_detalle else 'rápido'})")
+        
+        descripcion = describir_imagen(image_bytes, prompt)
+        
+        # Si la descripción es muy corta, intentar con tags
+        if len(descripcion) < 10:
             descripcion = describir_imagen_tags(image_bytes)
 
         return jsonify({
@@ -394,4 +494,5 @@ if __name__ == '__main__':
     print("")
     
     port = int(os.environ.get('PORT', 5000))
+    print(f"🔌 Escuchando en el puerto {port}")
     app.run(host='0.0.0.0', port=port, debug=not EN_PRODUCCION)
