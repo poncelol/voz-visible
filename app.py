@@ -33,7 +33,7 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 # ⚠️ IMPORTANTE: Usar deepseek-vl que SÍ soporta imágenes
-MODELO_DEEPSEEK = "deepseek-vl"  # <--- CAMBIO CLAVE
+MODELO_DEEPSEEK = "deepseek-v4-flash"  # <--- CAMBIO CLAVE
 
 EN_PRODUCCION = os.environ.get('RENDER') == 'true' or os.environ.get('PORT') is not None
 
