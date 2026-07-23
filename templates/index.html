@@ -1,518 +1,507 @@
-# ============================================================
-# Voz Visible — Generador de audiodescripciones inclusivas
-# Versión con BLIP para descripciones de contenido REAL
-# ============================================================
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voz Visible - Cámara Inclusiva</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f0f4f8;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 15px;
+            margin-bottom: 30px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .video-container {
+            position: relative;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        #video {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        #canvas {
+            display: none;
+        }
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: bold;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #5a67d8;
+            transform: translateY(-2px);
+        }
+        .btn-danger {
+            background: #fc8181;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #f56565;
+        }
+        .btn-success {
+            background: #48bb78;
+            color: white;
+        }
+        .btn-success:hover {
+            background: #38a169;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .descripcion-box {
+            background: #f7fafc;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 15px;
+            min-height: 100px;
+        }
+        .descripcion-texto {
+            font-size: 18px;
+            line-height: 1.6;
+            color: #2d3748;
+        }
+        .audio-player {
+            width: 100%;
+            margin-top: 10px;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        .status-active {
+            background: #48bb78;
+            color: white;
+        }
+        .status-inactive {
+            background: #fc8181;
+            color: white;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #718096;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .badge-gratis {
+            background: #48bb78;
+            color: white;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🎥 Voz Visible - Cámara Inclusiva</h1>
+            <p>Describe el mundo para personas con discapacidad visual</p>
+            <span class="badge-gratis">✅ Completamente GRATUITO</span>
+        </div>
 
-import os
-import uuid
-import base64
-import time
-import io
-import json
-from pathlib import Path
-from urllib.parse import quote
-from datetime import datetime
-from typing import Tuple, List, Dict, Optional
-
-import requests
-from dotenv import load_dotenv
-from flask import Flask, render_template, request, url_for, jsonify
-from gtts import gTTS
-from PIL import Image, ImageStat, ImageFilter
-
-# ============================================================
-# NUEVO: IMPORTAR BLIP PARA DESCRIPCIONES DE CONTENIDO REAL
-# ============================================================
-try:
-    from transformers import BlipProcessor, BlipForConditionalGeneration
-    import torch
-    BLIP_DISPONIBLE = True
-    print("✅ BLIP disponible - Descripciones de contenido REAL")
-except ImportError:
-    BLIP_DISPONIBLE = False
-    print("⚠️ BLIP no disponible - Usando análisis básico")
-
-load_dotenv()
-
-BASE_DIR = Path(__file__).resolve().parent
-GENERATED_DIR = BASE_DIR / "static" / "generated"
-GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-
-app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
-app.secret_key = os.environ.get("SECRET_KEY", "tu-clave-secreta-aqui")
-
-EN_PRODUCCION = os.environ.get('RENDER') == 'true'
-
-# ============================================================
-# INICIALIZAR BLIP (MODELO GRATUITO)
-# ============================================================
-if BLIP_DISPONIBLE:
-    print("🔄 Cargando modelo BLIP para descripciones de contenido...")
-    try:
-        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
-        print("✅ BLIP cargado correctamente")
-    except Exception as e:
-        print(f"❌ Error cargando BLIP: {e}")
-        BLIP_DISPONIBLE = False
-else:
-    processor = None
-    model = None
-
-# ============================================================
-# IDIOMAS
-# ============================================================
-IDIOMAS = {
-    "es": {"nombre": "Español", "traduccion": "español", "gtts": "es"},
-    "en": {"nombre": "Inglés", "traduccion": "inglés", "gtts": "en"},
-    "fr": {"nombre": "Francés", "traduccion": "francés", "gtts": "fr"},
-    "de": {"nombre": "Alemán", "traduccion": "alemán", "gtts": "de"},
-    "it": {"nombre": "Italiano", "traduccion": "italiano", "gtts": "it"},
-    "pt": {"nombre": "Portugués", "traduccion": "portugués", "gtts": "pt"},
-}
-
-# ============================================================
-# FUNCIONES DE CONTROL
-# ============================================================
-ultima_solicitud = {}
-TIEMPO_MINIMO_ENTRE_SOLICITUDES = 1
-
-def verificar_limite_solicitudes(usuario="default") -> Tuple[bool, int]:
-    ahora = datetime.now()
-    if usuario in ultima_solicitud:
-        diferencia = (ahora - ultima_solicitud[usuario]).total_seconds()
-        if diferencia < TIEMPO_MINIMO_ENTRE_SOLICITUDES:
-            return False, int(TIEMPO_MINIMO_ENTRE_SOLICITUDES - diferencia) + 1
-    ultima_solicitud[usuario] = ahora
-    return True, 0
-
-# ============================================================
-# ALGORITMOS DE VISIÓN POR COMPUTADORA (FALLBACK)
-# ============================================================
-
-def obtener_color_dominante(imagen: Image.Image) -> str:
-    try:
-        img_pequena = imagen.resize((50, 50))
-        colores = img_pequena.getcolors(2500)
-        if not colores:
-            return "color"
-        colores_ordenados = sorted(colores, key=lambda x: x[0], reverse=True)
-        r, g, b = colores_ordenados[0][1]
-        if r > 200 and g > 200 and b > 200:
-            return "blanco"
-        elif r < 50 and g < 50 and b < 50:
-            return "negro"
-        elif r > 200 and g < 100 and b < 100:
-            return "rojo"
-        elif r < 100 and g > 200 and b < 100:
-            return "verde"
-        elif r < 100 and g < 100 and b > 200:
-            return "azul"
-        elif r > 200 and g > 200 and b < 100:
-            return "amarillo"
-        else:
-            return f"tono {r},{g},{b}"
-    except:
-        return "color"
-
-def analizar_brillo(imagen: Image.Image) -> str:
-    try:
-        gris = imagen.convert('L')
-        stat = ImageStat.Stat(gris)
-        brillo = stat.mean[0]
-        if brillo > 200:
-            return "muy brillante"
-        elif brillo > 150:
-            return "brillante"
-        elif brillo > 100:
-            return "luminosidad media"
-        elif brillo > 50:
-            return "oscuro"
-        else:
-            return "muy oscuro"
-    except:
-        return "luminosidad media"
-
-def analizar_composicion(imagen: Image.Image) -> str:
-    try:
-        ancho, alto = imagen.size
-        if ancho > alto * 1.5:
-            return "horizontal"
-        elif alto > ancho * 1.5:
-            return "vertical"
-        else:
-            return "cuadrada"
-    except:
-        return "estándar"
-
-# ============================================================
-# FUNCIÓN PRINCIPAL: DESCRIPCIÓN CON BLIP O FALLBACK
-# ============================================================
-
-def describir_imagen_con_contenido(imagen_bytes: bytes, nivel_cognitivo: str = "estándar") -> Dict[str, str]:
-    """Describe el CONTENIDO REAL de la imagen usando BLIP o fallback."""
-    
-    try:
-        imagen = Image.open(io.BytesIO(imagen_bytes))
-        
-        # Obtener detalles técnicos (siempre útiles)
-        color = obtener_color_dominante(imagen)
-        brillo = analizar_brillo(imagen)
-        composicion = analizar_composicion(imagen)
-        
-        # ============================================================
-        # 1. INTENTAR CON BLIP (DESCRIPCIÓN DE CONTENIDO REAL)
-        # ============================================================
-        if BLIP_DISPONIBLE and model is not None and processor is not None:
-            try:
-                # Procesar imagen con BLIP
-                inputs = processor(imagen, return_tensors="pt")
+        <!-- Grid principal -->
+        <div class="grid">
+            <!-- Cámara -->
+            <div class="card">
+                <h2>📷 Cámara en vivo</h2>
+                <div class="video-container">
+                    <video id="video" autoplay playsinline></video>
+                    <canvas id="canvas"></canvas>
+                </div>
                 
-                # Generar descripción
-                with torch.no_grad():
-                    out = model.generate(**inputs, max_length=50, num_beams=4)
-                    descripcion_en = processor.decode(out[0], skip_special_tokens=True)
+                <div class="controls">
+                    <button id="btnIniciar" class="btn btn-success">▶️ Iniciar cámara</button>
+                    <button id="btnCapturar" class="btn btn-primary" disabled>📸 Capturar y describir</button>
+                    <button id="btnDetener" class="btn btn-danger" disabled>⏹️ Detener</button>
+                </div>
                 
-                # Traducir a español (si no está en español)
-                if descripcion_en:
-                    # Si la descripción está en inglés, traducir con API gratuita
-                    try:
-                        # Usar traducción simple o API gratuita
-                        descripcion = descripcion_en
-                        # Si quieres traducir, puedes usar googletrans o similar
-                        # Por ahora, mantenemos en inglés o usamos la descripción tal cual
-                    except:
-                        descripcion = descripcion_en
+                <div id="statusContainer">
+                    <span id="statusCamara" class="status status-inactive">⚪ Inactiva</span>
+                </div>
+            </div>
+
+            <!-- Descripción -->
+            <div class="card">
+                <h2>🔊 Descripción en vivo</h2>
+                <div id="descripcionContainer">
+                    <div class="descripcion-box">
+                        <div id="descripcionTexto" class="descripcion-texto">
+                            <em>La descripción aparecerá aquí...</em>
+                        </div>
+                    </div>
                     
-                    # Enriquecer con información técnica
-                    descripcion = f"{descripcion}. La imagen tiene composición {composicion}, colores {color} y {brillo}."
+                    <!-- Reproductor de audio -->
+                    <div id="audioContainer" style="display: none;">
+                        <audio id="audioPlayer" class="audio-player" controls>
+                            Tu navegador no soporta audio.
+                        </audio>
+                    </div>
                     
-                    return {
-                        "descripcion": descripcion,
-                        "modelo": "BLIP",
-                        "detalles": {
-                            "color": color,
-                            "brillo": brillo,
-                            "composicion": composicion
-                        }
+                    <!-- Estado -->
+                    <div id="estadoProcesamiento" style="margin-top: 15px;">
+                        <span id="statusProcesamiento" class="status status-inactive">⏳ Esperando captura...</span>
+                    </div>
+                </div>
+                
+                <!-- Historial -->
+                <div style="margin-top: 20px; border-top: 1px solid #e2e8f0; padding-top: 15px;">
+                    <h3>📜 Historial</h3>
+                    <div id="historial" style="max-height: 200px; overflow-y: auto;">
+                        <p style="color: #a0aec0; font-size: 14px;">Sin descripciones aún</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <div style="text-align: center; margin-top: 30px; color: #718096; font-size: 14px;">
+            <p>🔒 Privacidad: Las imágenes no se almacenan en el servidor</p>
+            <p>⚡ Gratuito y sin límites</p>
+        </div>
+    </div>
+
+    <script>
+        // ============================================
+        // CÓDIGO JAVASCRIPT COMPLETO PARA LA CÁMARA
+        // ============================================
+        
+        class CamaraInclusiva {
+            constructor() {
+                this.video = document.getElementById('video');
+                this.canvas = document.getElementById('canvas');
+                this.context = this.canvas.getContext('2d');
+                this.stream = null;
+                this.isRunning = false;
+                this.capturing = false;
+                
+                // Elementos UI
+                this.btnIniciar = document.getElementById('btnIniciar');
+                this.btnCapturar = document.getElementById('btnCapturar');
+                this.btnDetener = document.getElementById('btnDetener');
+                this.statusCamara = document.getElementById('statusCamara');
+                this.descripcionTexto = document.getElementById('descripcionTexto');
+                this.statusProcesamiento = document.getElementById('statusProcesamiento');
+                this.audioPlayer = document.getElementById('audioPlayer');
+                this.audioContainer = document.getElementById('audioContainer');
+                this.historial = document.getElementById('historial');
+                
+                // Configuración
+                this.intervaloCaptura = null;
+                this.frecuenciaCaptura = 3000; // 3 segundos
+                
+                // Bind events
+                this.btnIniciar.addEventListener('click', () => this.iniciar());
+                this.btnCapturar.addEventListener('click', () => this.capturarYDescribir());
+                this.btnDetener.addEventListener('click', () => this.detener());
+                
+                // Iniciar automáticamente si está disponible
+                this.verificarEstadoInicial();
+            }
+            
+            async verificarEstadoInicial() {
+                try {
+                    const response = await fetch('/api/camara/estado');
+                    const data = await response.json();
+                    if (data.activo) {
+                        console.log('✅ Servicio de cámara disponible');
+                    }
+                } catch (error) {
+                    console.warn('⚠️ Servicio de cámara no disponible');
+                }
+            }
+            
+            async iniciar() {
+                try {
+                    // Solicitar acceso a la cámara
+                    this.stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            facingMode: 'environment',
+                            width: { ideal: 640 },
+                            height: { ideal: 480 }
+                        },
+                        audio: false
+                    });
+                    
+                    this.video.srcObject = this.stream;
+                    await this.video.play();
+                    
+                    this.isRunning = true;
+                    this.actualizarUI();
+                    
+                    this.statusCamara.textContent = '🟢 Activa';
+                    this.statusCamara.className = 'status status-active';
+                    
+                    console.log('✅ Cámara iniciada correctamente');
+                    
+                    // Captura automática cada X segundos
+                    this.iniciarCapturaAutomatica();
+                    
+                } catch (error) {
+                    console.error('❌ Error al iniciar cámara:', error);
+                    alert('No se pudo acceder a la cámara. Por favor, verifica los permisos.');
+                    
+                    // Fallback: modo simulación
+                    this.iniciarModoSimulacion();
+                }
+            }
+            
+            iniciarModoSimulacion() {
+                console.log('🔄 Iniciando modo simulación');
+                this.statusCamara.textContent = '🟡 Simulación';
+                this.statusCamara.className = 'status status-active';
+                this.isRunning = true;
+                this.btnCapturar.disabled = false;
+                
+                // Simular captura cada 5 segundos
+                this.intervaloCaptura = setInterval(() => {
+                    this.simularCaptura();
+                }, 5000);
+            }
+            
+            simularCaptura() {
+                const descripciones = [
+                    "La cámara muestra una escena con buena iluminación y colores cálidos.",
+                    "Se observa un ambiente tranquilo con elementos visuales diversos.",
+                    "La imagen presenta un contraste interesante entre luces y sombras.",
+                    "Se percibe una composición equilibrada con varios elementos."
+                ];
+                const descripcion = descripciones[Math.floor(Math.random() * descripciones.length)];
+                this.mostrarResultado(descripcion, null);
+            }
+            
+            detener() {
+                if (this.stream) {
+                    this.stream.getTracks().forEach(track => track.stop());
+                    this.video.srcObject = null;
+                }
+                
+                if (this.intervaloCaptura) {
+                    clearInterval(this.intervaloCaptura);
+                    this.intervaloCaptura = null;
+                }
+                
+                this.isRunning = false;
+                this.capturing = false;
+                this.actualizarUI();
+                
+                this.statusCamara.textContent = '⚪ Inactiva';
+                this.statusCamara.className = 'status status-inactive';
+                
+                console.log('⏹️ Cámara detenida');
+            }
+            
+            iniciarCapturaAutomatica() {
+                if (this.intervaloCaptura) {
+                    clearInterval(this.intervaloCaptura);
+                }
+                
+                this.intervaloCaptura = setInterval(() => {
+                    if (this.isRunning && !this.capturing) {
+                        this.capturarYDescribir();
+                    }
+                }, this.frecuenciaCaptura);
+            }
+            
+            async capturarYDescribir() {
+                if (!this.isRunning) {
+                    alert('Primero inicia la cámara');
+                    return;
+                }
+                
+                if (this.capturing) {
+                    console.log('⏳ Ya hay una captura en proceso');
+                    return;
+                }
+                
+                this.capturing = true;
+                this.btnCapturar.disabled = true;
+                this.statusProcesamiento.textContent = '🔄 Procesando...';
+                this.statusProcesamiento.className = 'status status-active';
+                
+                try {
+                    // Capturar fotograma
+                    this.canvas.width = this.video.videoWidth || 640;
+                    this.canvas.height = this.video.videoHeight || 480;
+                    this.context.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+                    
+                    // Convertir a base64
+                    const imageData = this.canvas.toDataURL('image/jpeg', 0.8);
+                    
+                    // Enviar al servidor
+                    const response = await fetch('/api/camara/stream', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ imagen: imageData })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`Error ${response.status}: ${response.statusText}`);
                     }
                     
-            except Exception as e:
-                print(f"❌ Error en BLIP: {e}")
-                # Continuar con fallback
-        
-        # ============================================================
-        # 2. FALLBACK: DESCRIPCIÓN TÉCNICA (lo que ya tenías)
-        # ============================================================
-        if nivel_cognitivo == "simplificada":
-            descripcion = f"Imagen {composicion}. Color {color}. {brillo}."
-        else:
-            descripcion = f"Esta es una imagen de composición {composicion}. "
-            descripcion += f"El color predominante es {color}, con {brillo}. "
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    // Mostrar resultado
+                    this.mostrarResultado(data.descripcion, data.audio);
+                    
+                } catch (error) {
+                    console.error('❌ Error en captura:', error);
+                    this.descripcionTexto.innerHTML = `
+                        <span style="color: #fc8181;">❌ Error: ${error.message}</span>
+                    `;
+                } finally {
+                    this.capturing = false;
+                    this.btnCapturar.disabled = false;
+                    this.statusProcesamiento.textContent = '✅ Listo';
+                    this.statusProcesamiento.className = 'status status-active';
+                }
+            }
             
-            # Análisis de contraste
-            try:
-                gris = imagen.convert('L')
-                stat = ImageStat.Stat(gris)
-                if stat.stddev[0] > 80:
-                    descripcion += "Tiene alto contraste. "
-                elif stat.stddev[0] > 40:
-                    descripcion += "Tiene contraste medio. "
-                else:
-                    descripcion += "Tiene bajo contraste. "
-            except:
-                pass
+            mostrarResultado(descripcion, audioBase64) {
+                // Mostrar descripción
+                this.descripcionTexto.textContent = descripcion;
+                
+                // Reproducir audio si existe
+                if (audioBase64) {
+                    this.audioContainer.style.display = 'block';
+                    const audioBlob = this.base64ToBlob(audioBase64, 'audio/mp3');
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    this.audioPlayer.src = audioUrl;
+                    this.audioPlayer.play().catch(e => console.warn('Error al reproducir audio:', e));
+                }
+                
+                // Añadir al historial
+                this.agregarHistorial(descripcion);
+            }
             
-            # Detectar bordes
-            try:
-                bordes = imagen.convert('L').filter(ImageFilter.FIND_EDGES)
-                stat = ImageStat.Stat(bordes)
-                if stat.stddev[0] > 30:
-                    descripcion += "La imagen tiene bordes definidos y detalles visibles. "
-                else:
-                    descripcion += "La imagen tiene bordes suaves. "
-            except:
-                pass
+            base64ToBlob(base64, mimeType) {
+                const byteCharacters = atob(base64);
+                const byteArrays = [];
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteArrays.push(byteCharacters.charCodeAt(i));
+                }
+                const byteArray = new Uint8Array(byteArrays);
+                return new Blob([byteArray], { type: mimeType });
+            }
             
-            # Intentar detectar si hay personas (muy básico)
-            try:
-                # Si la imagen tiene piel (tone detection muy básico)
-                ancho, alto = imagen.size
-                muestra = imagen.crop((ancho//4, alto//4, ancho*3//4, alto*3//4))
-                # Esto es muy básico, mejor con BLIP
-            except:
-                pass
-        
-        return {
-            "descripcion": descripcion,
-            "modelo": "Algoritmos CV (fallback)",
-            "detalles": {
-                "color": color,
-                "brillo": brillo,
-                "composicion": composicion
+            agregarHistorial(descripcion) {
+                const timestamp = new Date().toLocaleTimeString();
+                const item = document.createElement('div');
+                item.style.cssText = `
+                    padding: 8px;
+                    margin: 5px 0;
+                    background: #f7fafc;
+                    border-radius: 6px;
+                    font-size: 14px;
+                    border-left: 3px solid #667eea;
+                `;
+                item.innerHTML = `
+                    <strong>${timestamp}</strong>
+                    <span style="margin-left: 10px;">${descripcion}</span>
+                `;
+                
+                // Eliminar mensaje de "sin descripciones"
+                const emptyMsg = this.historial.querySelector('p');
+                if (emptyMsg && emptyMsg.style.color === 'rgb(160, 174, 192)') {
+                    this.historial.innerHTML = '';
+                }
+                
+                this.historial.prepend(item);
+                
+                // Limitar historial a 20 items
+                while (this.historial.children.length > 20) {
+                    this.historial.removeChild(this.historial.lastChild);
+                }
+            }
+            
+            actualizarUI() {
+                this.btnIniciar.disabled = this.isRunning;
+                this.btnCapturar.disabled = !this.isRunning;
+                this.btnDetener.disabled = !this.isRunning;
             }
         }
         
-    except Exception as e:
-        print(f"❌ Error en análisis: {e}")
-        return {
-            "descripcion": "No se pudo analizar la imagen correctamente.",
-            "modelo": "Error",
-            "detalles": {}
-        }
-
-# ============================================================
-# FUNCIONES AUXILIARES
-# ============================================================
-
-def generar_audio(texto: str, ruta_salida: Path, idioma_gtts: str = "es") -> None:
-    try:
-        gTTS(text=texto, lang=idioma_gtts, slow=False).save(str(ruta_salida))
-    except Exception as e:
-        print(f"❌ Error generando audio: {e}")
-        raise
-
-def generar_imagen_ia(prompt: str, ruta_salida: Path) -> Path:
-    url = f"https://image.pollinations.ai/prompt/{quote(prompt)}"
-    respuesta = requests.get(
-        url, params={"width": 1024, "height": 1024, "nologo": "true"}, timeout=60
-    )
-    respuesta.raise_for_status()
-    ruta_salida.write_bytes(respuesta.content)
-    return ruta_salida
-
-# ============================================================
-# PROCESAMIENTO PRINCIPAL
-# ============================================================
-
-def procesar_todo_inclusivo(
-    origen: str,
-    session_id: str,
-    prompt_imagen: Optional[str],
-    archivo_subido,
-    nivel_cognitivo: str,
-    idiomas_elegidos: List[str],
-    incluir_traduccion: bool,
-) -> Dict:
-    # Obtener imagen
-    if origen == "subir":
-        if archivo_subido is None or archivo_subido.filename == "":
-            raise ValueError("No se ha subido ninguna imagen.")
-        extension = Path(archivo_subido.filename).suffix.lower() or ".jpg"
-        if extension not in (".jpg", ".jpeg", ".png", ".webp"):
-            extension = ".jpg"
-        ruta_imagen = GENERATED_DIR / f"{session_id}_original{extension}"
-        archivo_subido.save(ruta_imagen)
-        with open(ruta_imagen, "rb") as f:
-            imagen_bytes = f.read()
-    else:
-        prompt_final = (prompt_imagen or "").strip() or "Una escena cotidiana, foto realista"
-        ruta_imagen = GENERATED_DIR / f"{session_id}_generada.png"
-        generar_imagen_ia(prompt_final, ruta_imagen)
-        with open(ruta_imagen, "rb") as f:
-            imagen_bytes = f.read()
-
-    # ANALIZAR CON CONTENIDO REAL
-    resultado_analisis = describir_imagen_con_contenido(imagen_bytes, nivel_cognitivo)
-    descripcion_es = resultado_analisis["descripcion"]
-    
-    descripciones = {}
-    if "es" in idiomas_elegidos:
-        descripciones["es"] = descripcion_es
-
-    # Generar audios
-    audios = {}
-    for codigo in idiomas_elegidos:
-        texto_a_leer = descripciones.get(codigo, descripcion_es)
-        idioma_gtts = IDIOMAS.get(codigo, {}).get("gtts", "es")
-        ruta_audio = GENERATED_DIR / f"{session_id}_audio_{codigo}.mp3"
-        generar_audio(texto_a_leer, ruta_audio, idioma_gtts)
-        audios[codigo] = ruta_audio.name
-
-    return {
-        "imagen_nombre": ruta_imagen.name,
-        "descripciones": descripciones,
-        "audios": audios,
-        "nivel_cognitivo": nivel_cognitivo,
-        "modelo_usado": resultado_analisis.get("modelo", "Desconocido"),
-        "detalles_analisis": resultado_analisis.get("detalles", {})
-    }
-
-# ============================================================
-# RUTAS FLASK
-# ============================================================
-
-@app.route("/", methods=["GET"])
-def index():
-    return render_template(
-        "index.html",
-        idiomas=IDIOMAS,
-        api_configurada=BLIP_DISPONIBLE,
-        en_produccion=EN_PRODUCCION,
-        error=None,
-        resultado=None,
-        valores={
-            "nivel": "estándar",
-            "idiomas": ["es"],
-            "origen": "generar",
-            "prompt": "Una cocina luminosa con dos personas cocinando",
-            "traducir": False
-        },
-        blip_disponible=BLIP_DISPONIBLE
-    )
-
-@app.route("/generar", methods=["POST"])
-def generar():
-    valores = {
-        "nivel": request.form.get("nivel", "estándar"),
-        "idiomas": request.form.getlist("idiomas") or ["es"],
-        "origen": request.form.get("origen", "generar"),
-        "prompt": request.form.get("prompt", "").strip(),
-        "traducir": request.form.get("traducir") == "on",
-    }
-
-    try:
-        session_id = uuid.uuid4().hex[:10]
-        resultado = procesar_todo_inclusivo(
-            origen=valores["origen"],
-            session_id=session_id,
-            prompt_imagen=valores["prompt"],
-            archivo_subido=request.files.get("imagen"),
-            nivel_cognitivo=valores["nivel"],
-            idiomas_elegidos=valores["idiomas"],
-            incluir_traduccion=valores["traducir"],
-        )
-        resultado["imagen_url"] = url_for("static", filename=f"generated/{resultado['imagen_nombre']}")
-        resultado["audios_url"] = {
-            codigo: url_for("static", filename=f"generated/{nombre}")
-            for codigo, nombre in resultado["audios"].items()
-        }
-        return render_template(
-            "index.html", idiomas=IDIOMAS, api_configurada=BLIP_DISPONIBLE,
-            en_produccion=EN_PRODUCCION,
-            error=None, resultado=resultado, valores=valores,
-            blip_disponible=BLIP_DISPONIBLE
-        )
-    except Exception as exc:
-        error_amigable = f"No se pudo completar el proceso: {exc}"
-        return render_template(
-            "index.html", idiomas=IDIOMAS, api_configurada=BLIP_DISPONIBLE,
-            en_produccion=EN_PRODUCCION,
-            error=error_amigable,
-            resultado=None, valores=valores,
-            blip_disponible=BLIP_DISPONIBLE
-        )
-
-# ============================================================
-# RUTAS DE CÁMARA EN VIVO (CON BLIP)
-# ============================================================
-
-@app.route('/api/camara/estado', methods=['GET'])
-def estado_camara():
-    return jsonify({
-        'activo': True,
-        'modo': 'BLIP + Algoritmos CV' if BLIP_DISPONIBLE else 'Algoritmos CV',
-        'gratuito': True,
-        'modelo': 'BLIP (descripciones de contenido real)',
-        'version': '2.0.0',
-        'blip_disponible': BLIP_DISPONIBLE
-    })
-
-@app.route('/api/camara/stream', methods=['POST'])
-def procesar_stream_camara():
-    """Procesa fotogramas con BLIP para descripciones de contenido REAL."""
-    try:
-        data = request.get_json()
-        if not data or 'imagen' not in data:
-            return jsonify({'error': 'No se recibió imagen'}), 400
-
-        # Rate limit
-        ip_usuario = request.remote_addr or "default"
-        puede_proceder, tiempo_espera = verificar_limite_solicitudes(ip_usuario)
-        if not puede_proceder:
-            return jsonify({
-                'error': 'rate_limit',
-                'mensaje': f'Espera {tiempo_espera} segundos'
-            }), 429
-
-        # Decodificar imagen
-        image_data = data['imagen']
-        if ',' in image_data:
-            _, encoded = image_data.split(',', 1)
-        else:
-            encoded = image_data
-        image_bytes = base64.b64decode(encoded)
-        
-        # Analizar con BLIP o fallback
-        nivel = data.get('nivel', 'estándar')
-        resultado = describir_imagen_con_contenido(image_bytes, nivel)
-        descripcion = resultado["descripcion"]
-        
-        # Generar audio
-        session_id = uuid.uuid4().hex[:8]
-        audio_path = GENERATED_DIR / f"{session_id}_camara.mp3"
-        
-        idioma = data.get('idioma', 'es')
-        idioma_gtts = IDIOMAS.get(idioma, {}).get("gtts", "es")
-        
-        generar_audio(descripcion, audio_path, idioma_gtts)
-        
-        # Convertir audio a base64
-        with open(audio_path, "rb") as f:
-            audio_base64 = base64.b64encode(f.read()).decode('utf-8')
-        
-        # Limpiar archivo temporal
-        try:
-            os.remove(audio_path)
-        except:
-            pass
-        
-        return jsonify({
-            'descripcion': descripcion,
-            'audio': audio_base64,
-            'timestamp': datetime.now().isoformat(),
-            'modelo': resultado.get('modelo', 'Desconocido'),
-            'detalles': resultado.get("detalles", {})
-        })
-        
-    except Exception as e:
-        print(f"❌ Error en stream: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/estado', methods=['GET'])
-def estado_sistema():
-    return jsonify({
-        'modelo': {
-            'nombre': 'BLIP + Algoritmos CV' if BLIP_DISPONIBLE else 'Algoritmos CV',
-            'gratuito': True,
-            'memoria_mb': '< 500' if BLIP_DISPONIBLE else '< 100',
-            'tipo': 'IA + Visión por computadora' if BLIP_DISPONIBLE else 'Visión por computadora',
-            'blip_disponible': BLIP_DISPONIBLE,
-            'descripcion_contenido_real': BLIP_DISPONIBLE
-        },
-        'camara': {
-            'activa': True,
-            'gratuita': True,
-            'fps': 0.5
-        },
-        'produccion': EN_PRODUCCION,
-        'idiomas': list(IDIOMAS.keys()),
-        'version': '2.0.0'
-    })
-
-# ============================================================
-# EJECUCIÓN
-# ============================================================
-
-if __name__ == '__main__':
-    print("🚀 Voz Visible iniciado")
-    print(f"🖼️ Modelo: {'BLIP (descripciones de contenido REAL)' if BLIP_DISPONIBLE else 'Algoritmos CV (solo formato)'}")
-    print(f"📷 Cámara en vivo: ACTIVADA")
-    print(f"💾 Memoria estimada: {'~500 MB' if BLIP_DISPONIBLE else '< 100 MB'}")
-    print(f"🌐 Entorno: {'Producción' if EN_PRODUCCION else 'Desarrollo'}")
-    print("")
-    
-    port = int(os.environ.get('PORT', 5000))
-    print(f"🔌 Escuchando en el puerto {port}")
-    app.run(host='0.0.0.0', port=port, debug=not EN_PRODUCCION)
+        // Inicializar cuando la página esté lista
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('🚀 Iniciando Voz Visible - Cámara Inclusiva');
+            const camara = new CamaraInclusiva();
+            
+            // Exponer para debugging
+            window.camara = camara;
+        });
+    </script>
+</body>
+</html>
