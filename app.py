@@ -1,31 +1,21 @@
 # ============================================================
 # Voz Visible — Generador de audiodescripciones inclusivas
-# Migración a Flask del notebook original de Colab.
-#
-# Pensado para que una TERCERA PERSONA (familiar, docente,
-# persona cuidadora, profesional de accesibilidad) prepare una
-# audiodescripción y se la comparta a la persona ciega, con baja
-# visión o con discapacidad cognitiva a la que acompaña.
-#
-# CONFIGURACIÓN:
-#   1. pip install -r requirements.txt
-#   2. copia .env.example a .env y pon tu GEMINI_API_KEY
-#      (gratis en https://aistudio.google.com/apikey)
-#   3. python app.py   (o gunicorn app:app en producción)
+# Con manejo de cuota de Gemini API
 # ============================================================
 
 import os
 import uuid
 import base64
+import time
 from pathlib import Path
 from urllib.parse import quote
+from datetime import datetime, timedelta
 
 import requests
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, url_for, jsonify
 from gtts import gTTS
 from PIL import Image
-
 from google import genai
 
 load_dotenv()
@@ -38,11 +28,19 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024  # 12 MB por subida
+app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024  # 12 MB
+
+# ============================================================
+# CONFIGURACIÓN DE CUOTA Y RATE LIMITING
+# ============================================================
+# Diccionario para rastrear solicitudes por usuario/IP
+ultima_solicitud = {}
+TIEMPO_MINIMO_ENTRE_SOLICITUDES = 10  # segundos
+MAX_REINTENTOS = 3
+TIEMPO_ESPERA_REINTENTO = 5  # segundos base
 
 # ============================================================
 # IDIOMAS SOPORTADOS
-# código app -> (nombre visible, nombre largo para el prompt de traducción, código gTTS)
 # ============================================================
 IDIOMAS = {
     "es": {"nombre": "Español",   "traduccion": "español",   "gtts": "es"},
@@ -56,7 +54,7 @@ IDIOMAS = {
 }
 
 # ============================================================
-# PROMPTS (idénticos en espíritu a los del notebook original)
+# PROMPTS
 # ============================================================
 PROMPT_AUDIODESCRIPCION_ESTANDAR = """
 Describe esta imagen para una persona ciega o con baja visión.
@@ -104,47 +102,139 @@ lo que ves en este fotograma de cámara en vivo para explicárselo a alguien en 
 Enfócate en elementos principales como personas, objetos, colores y acciones visibles.
 """
 
-MODELO_GEMINI = "gemini-2.5-flash"
+# CAMBIADO: Usar modelo con cuota más alta
+MODELO_GEMINI = "gemini-1.5-flash"  # Cambiado de 2.5-flash a 1.5-flash
 
 # ============================================================
-# FUNCIONES (equivalentes a las del notebook)
+# FUNCIONES DE CONTROL DE CUOTA
 # ============================================================
-def describir_imagen(ruta_imagen: Path, nivel_complejidad: str = "estándar") -> str:
-    """Envía la imagen a Gemini y devuelve la audiodescripción en español."""
+def verificar_limite_solicitudes(usuario="default") -> tuple[bool, int]:
+    """
+    Verifica si se puede hacer una solicitud respetando el rate limit.
+    Retorna: (puede_proceder, tiempo_espera_segundos)
+    """
+    ahora = datetime.now()
+    
+    if usuario in ultima_solicitud:
+        diferencia = (ahora - ultima_solicitud[usuario]).total_seconds()
+        if diferencia < TIEMPO_MINIMO_ENTRE_SOLICITUDES:
+            tiempo_espera = int(TIEMPO_MINIMO_ENTRE_SOLICITUDES - diferencia) + 1
+            return False, tiempo_espera
+    
+    ultima_solicitud[usuario] = ahora
+    return True, 0
+
+def manejar_error_quota(error_message: str) -> dict:
+    """
+    Analiza el mensaje de error de cuota y devuelve información útil.
+    """
+    tiempo_espera = 30  # tiempo por defecto
+    
+    # Intentar extraer el tiempo de espera del mensaje de error
+    if "retryDelay" in error_message:
+        try:
+            import re
+            match = re.search(r'retryDelay["\s:]+(\d+)s', error_message)
+            if match:
+                tiempo_espera = int(match.group(1)) + 5
+        except:
+            pass
+    
+    return {
+        "error": "Límite de solicitudes alcanzado",
+        "detalle": "La API de Gemini tiene un límite de solicitudes por minuto. Espera unos segundos y vuelve a intentarlo.",
+        "tiempo_espera": tiempo_espera,
+        "tipo": "quota_exceeded"
+    }
+
+def ejecutar_con_reintentos(func, *args, **kwargs):
+    """
+    Ejecuta una función con reintentos en caso de error de cuota.
+    """
+    for intento in range(MAX_REINTENTOS):
+        try:
+            # Verificar rate limit
+            puede_proceder, tiempo_espera = verificar_limite_solicitudes()
+            if not puede_proceder:
+                print(f"Rate limit activo. Esperando {tiempo_espera} segundos...")
+                time.sleep(tiempo_espera)
+                continue
+            
+            # Ejecutar la función
+            return func(*args, **kwargs)
+            
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                print(f"Error de cuota (intento {intento+1}/{MAX_REINTENTOS}): {error_str}")
+                
+                # Intentar extraer tiempo de espera
+                tiempo_espera = 30
+                if "retryDelay" in error_str:
+                    try:
+                        import re
+                        match = re.search(r'retryDelay["\s:]+(\d+)s', error_str)
+                        if match:
+                            tiempo_espera = int(match.group(1)) + 5
+                    except:
+                        pass
+                
+                if intento < MAX_REINTENTOS - 1:
+                    print(f"Esperando {tiempo_espera} segundos antes de reintentar...")
+                    time.sleep(tiempo_espera)
+                else:
+                    raise Exception(f"Error de cuota persistente después de {MAX_REINTENTOS} intentos. Espera un minuto y vuelve a intentarlo.")
+            else:
+                # Otro tipo de error
+                raise e
+    
+    raise Exception("Número máximo de reintentos alcanzado")
+
+# ============================================================
+# FUNCIONES PRINCIPALES
+# ============================================================
+def describir_imagen_con_reintentos(ruta_imagen: Path, nivel_complejidad: str = "estándar") -> str:
+    """Envía la imagen a Gemini con manejo de reintentos."""
     imagen = Image.open(ruta_imagen)
     prompt = (
         PROMPT_AUDIODESCRIPCION_SIMPLIFICADA
         if nivel_complejidad == "simplificada"
         else PROMPT_AUDIODESCRIPCION_ESTANDAR
     )
-    respuesta = gemini_client.models.generate_content(
-        model=MODELO_GEMINI, contents=[prompt, imagen]
-    )
-    return respuesta.text.strip()
-
-def describir_fotograma_en_vivo(imagen_bytes: bytes) -> str:
-    """Analiza un fotograma de cámara en vivo con Gemini."""
-    # Crear el objeto de imagen para Gemini
-    from PIL import Image
-    import io
     
-    # Convertir bytes a imagen PIL
+    def _describir():
+        respuesta = gemini_client.models.generate_content(
+            model=MODELO_GEMINI, contents=[prompt, imagen]
+        )
+        return respuesta.text.strip()
+    
+    return ejecutar_con_reintentos(_describir)
+
+def describir_fotograma_en_vivo_con_reintentos(imagen_bytes: bytes) -> str:
+    """Analiza un fotograma en vivo con manejo de reintentos."""
+    import io
     imagen_pil = Image.open(io.BytesIO(imagen_bytes))
     
-    # Enviar a Gemini con el prompt de análisis en vivo
-    respuesta = gemini_client.models.generate_content(
-        model=MODELO_GEMINI, 
-        contents=[PROMPT_ANALISIS_EN_VIVO, imagen_pil]
-    )
-    return respuesta.text.strip()
+    def _describir():
+        respuesta = gemini_client.models.generate_content(
+            model=MODELO_GEMINI, 
+            contents=[PROMPT_ANALISIS_EN_VIVO, imagen_pil]
+        )
+        return respuesta.text.strip()
+    
+    return ejecutar_con_reintentos(_describir)
 
-def traducir_texto(texto: str, idioma_destino: str) -> str:
-    """Traduce un texto usando Gemini."""
+def traducir_texto_con_reintentos(texto: str, idioma_destino: str) -> str:
+    """Traduce un texto con manejo de reintentos."""
     prompt = PROMPT_TRADUCCION.format(idioma_destino=idioma_destino, texto=texto)
-    respuesta = gemini_client.models.generate_content(
-        model=MODELO_GEMINI, contents=prompt
-    )
-    return respuesta.text.strip()
+    
+    def _traducir():
+        respuesta = gemini_client.models.generate_content(
+            model=MODELO_GEMINI, contents=prompt
+        )
+        return respuesta.text.strip()
+    
+    return ejecutar_con_reintentos(_traducir)
 
 def generar_audio(texto: str, ruta_salida: Path, idioma_gtts: str = "es") -> None:
     """Convierte el texto en un archivo mp3 con gTTS."""
@@ -170,11 +260,7 @@ def procesar_todo_inclusivo(
     incluir_traduccion: bool,
 ) -> dict:
     """
-    Flujo completo, equivalente a procesar_todo_inclusivo() del notebook:
-    1. Consigue la imagen (generada o subida)
-    2. Describe la imagen con Gemini
-    3. Traduce si se pide
-    4. Genera un audio mp3 real por idioma con gTTS
+    Flujo completo de procesamiento con manejo de cuota.
     """
     # 1) Imagen
     if origen == "subir":
@@ -190,23 +276,23 @@ def procesar_todo_inclusivo(
         ruta_imagen = GENERATED_DIR / f"{session_id}_generada.png"
         generar_imagen_ia(prompt_final, ruta_imagen)
 
-    # 2) Descripción base en español
-    descripcion_es = describir_imagen(ruta_imagen, nivel_cognitivo)
+    # 2) Descripción base en español (con reintentos)
+    descripcion_es = describir_imagen_con_reintentos(ruta_imagen, nivel_cognitivo)
     descripciones = {}
     if "es" in idiomas_elegidos:
         descripciones["es"] = descripcion_es
 
-    # 3) Traducción (si se pide) al resto de idiomas elegidos
+    # 3) Traducciones (con reintentos)
     for codigo in idiomas_elegidos:
         if codigo == "es":
             continue
         if incluir_traduccion:
             nombre_largo = IDIOMAS.get(codigo, {}).get("traduccion", codigo)
-            descripciones[codigo] = traducir_texto(descripcion_es, nombre_largo)
+            descripciones[codigo] = traducir_texto_con_reintentos(descripcion_es, nombre_largo)
         else:
             descripciones[codigo] = descripcion_es
 
-    # 4) Audio real (mp3) por idioma
+    # 4) Audio por idioma
     audios = {}
     for codigo in idiomas_elegidos:
         texto_a_leer = descripciones.get(codigo, descripcion_es)
@@ -223,7 +309,7 @@ def procesar_todo_inclusivo(
     }
 
 # ============================================================
-# RUTAS
+# RUTAS FLASK
 # ============================================================
 @app.route("/", methods=["GET"])
 def index():
@@ -251,8 +337,7 @@ def generar():
     if not GEMINI_API_KEY:
         return render_template(
             "index.html", idiomas=IDIOMAS, api_configurada=False,
-            error="Falta configurar GEMINI_API_KEY en el servidor (archivo .env). "
-                  "Quien administra esta página debe añadir la clave antes de poder usarla.",
+            error="Falta configurar GEMINI_API_KEY en el servidor.",
             resultado=None, valores=valores,
         )
 
@@ -276,16 +361,23 @@ def generar():
             "index.html", idiomas=IDIOMAS, api_configurada=True,
             error=None, resultado=resultado, valores=valores,
         )
-    except Exception as exc:  # noqa: BLE001 - queremos mostrar cualquier error al usuario
+    except Exception as exc:
+        # Verificar si es error de cuota
+        error_msg = str(exc)
+        if "429" in error_msg or "quota" in error_msg.lower():
+            error_amigable = "⚠️ Límite de solicitudes de Gemini alcanzado. Por favor, espera 30 segundos y vuelve a intentarlo."
+        else:
+            error_amigable = f"No se pudo completar el proceso: {exc}"
+        
         return render_template(
             "index.html", idiomas=IDIOMAS, api_configurada=True,
-            error=f"No se pudo completar el proceso: {exc}",
+            error=error_amigable,
             resultado=None, valores=valores,
         )
 
 @app.route('/analizar-imagen', methods=['POST'])
 def analizar_imagen():
-    """Analiza un fotograma de cámara en tiempo real."""
+    """Analiza un fotograma de cámara en tiempo real con manejo de cuota."""
     try:
         if not GEMINI_API_KEY:
             return jsonify({'error': 'Gemini no está configurado. Falta GEMINI_API_KEY.'}), 500
@@ -296,7 +388,7 @@ def analizar_imagen():
         if not image_data:
             return jsonify({'error': 'No se recibió ninguna imagen'}), 400
         
-        # Separar el encabezado base64 de los datos reales
+        # Decodificar base64
         if ',' in image_data:
             header, encoded = image_data.split(',', 1)
         else:
@@ -304,14 +396,57 @@ def analizar_imagen():
             
         image_bytes = base64.b64decode(encoded)
         
-        # Analizar la imagen con Gemini
-        descripcion = describir_fotograma_en_vivo(image_bytes)
+        # Verificar rate limit antes de procesar
+        ip_usuario = request.remote_addr or "default"
+        puede_proceder, tiempo_espera = verificar_limite_solicitudes(ip_usuario)
         
-        return jsonify({'descripcion': descripcion})
+        if not puede_proceder:
+            return jsonify({
+                'error': 'rate_limit',
+                'mensaje': f'Demasiadas solicitudes. Espera {tiempo_espera} segundos.',
+                'tiempo_espera': tiempo_espera
+            }), 429
+        
+        # Analizar la imagen (con reintentos internos)
+        try:
+            descripcion = describir_fotograma_en_vivo_con_reintentos(image_bytes)
+            return jsonify({'descripcion': descripcion})
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "quota" in error_str.lower():
+                return jsonify({
+                    'error': 'quota_exceeded',
+                    'mensaje': 'Límite de cuota alcanzado. Espera 30 segundos.',
+                    'tiempo_espera': 30
+                }), 429
+            raise e
         
     except Exception as e:
         print(f"Error en el análisis: {e}")
-        return jsonify({'error': f'Hubo un problema al analizar la imagen: {str(e)}'}), 500
+        return jsonify({'error': f'Error al analizar: {str(e)}'}), 500
 
+# ============================================================
+# ENDPOINT DE ESTADO DE CUOTA (opcional, para el frontend)
+# ============================================================
+@app.route('/api/estado-cuota', methods=['GET'])
+def estado_cuota():
+    """Devuelve el estado actual de la cuota."""
+    ip_usuario = request.remote_addr or "default"
+    puede_proceder, tiempo_espera = verificar_limite_solicitudes(ip_usuario)
+    
+    return jsonify({
+        'puede_proceder': puede_proceder,
+        'tiempo_espera': tiempo_espera if not puede_proceder else 0,
+        'modelo': MODELO_GEMINI,
+        'mensaje': 'Listo' if puede_proceder else f'Espera {tiempo_espera} segundos'
+    })
+
+# ============================================================
+# EJECUCIÓN
+# ============================================================
 if __name__ == '__main__':
+    print(f"🚀 Voz Visible iniciado")
+    print(f"📊 Modelo Gemini: {MODELO_GEMINI}")
+    print(f"⏱️  Tiempo mínimo entre solicitudes: {TIEMPO_MINIMO_ENTRE_SOLICITUDES}s")
+    print(f"🔄 Máximo de reintentos: {MAX_REINTENTOS}")
     app.run(host='0.0.0.0', port=5000, debug=True)
