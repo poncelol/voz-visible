@@ -34,7 +34,41 @@ EN_PRODUCCION = os.environ.get('RENDER') == 'true'
 # CONFIGURACIÓN GROQ (100% GRATUITO)
 # ============================================================
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODELO = "qwen/qwen3.6-27b"
+# Modelos disponibles en Groq (sin thinking tags):
+# - mixtral-8x7b-32768: Rápido y limpio
+# - llama-3.1-70b-versatile: Mejor calidad
+GROQ_MODELO = "mixtral-8x7b-32768"  # ✅ Modelo sin thinking tags
+
+# ============================================================
+# FUNCIÓN PARA LIMPIAR RESPUESTAS CON TAGS DE THINKING
+# ============================================================
+
+def limpiar_respuesta_groq(texto: str) -> str:
+    """
+    Elimina tags de <think> y otros elementos de razonamiento interno.
+    Groq a veces devuelve su proceso de pensamiento, esto lo elimina.
+    """
+    if not texto:
+        return texto
+    
+    # Eliminar tags <think>...</think>
+    import re
+    texto_limpio = re.sub(r'<think>.*?</think>', '', texto, flags=re.DOTALL)
+    
+    # Eliminar espacios múltiples y saltos de línea al inicio
+    texto_limpio = texto_limpio.strip()
+    
+    # Si la respuesta empieza con ** o -, probablemente sea markdown interno
+    lineas = texto_limpio.split('\n')
+    respuesta_limpia = []
+    
+    for linea in lineas:
+        linea = linea.strip()
+        # Saltar líneas vacías al inicio
+        if linea or respuesta_limpia:
+            respuesta_limpia.append(linea)
+    
+    return ' '.join(respuesta_limpia).strip()
 
 # ============================================================
 # IDIOMAS
@@ -127,6 +161,9 @@ def describir_con_groq(imagen_bytes: bytes, idioma: str = "es") -> str:
             data = response.json()
             descripcion = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             
+            # LIMPIAR respuesta (eliminar <think> tags y ruido)
+            descripcion = limpiar_respuesta_groq(descripcion)
+            
             if descripcion and len(descripcion) > 10:
                 print(f"✅ Groq ({idioma}): {descripcion[:80]}...")
                 return descripcion
@@ -177,6 +214,10 @@ def traducir_con_groq(texto: str, idioma_destino: str) -> Optional[str]:
         if response.status_code == 200:
             data = response.json()
             traduccion = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            
+            # LIMPIAR respuesta
+            traduccion = limpiar_respuesta_groq(traduccion)
+            
             if traduccion:
                 print(f"✅ Traducción a {idioma_nombre}: OK")
                 return traduccion
@@ -440,9 +481,10 @@ def estado_camara():
     return jsonify({
         'activo': True,
         'gratuito': True,
-        'modelo': 'Groq Vision' if GROQ_API_KEY else 'Técnico (fallback)',
+        'modelo': f'{GROQ_MODELO}' if GROQ_API_KEY else 'Técnico (fallback)',
         'groq_configurada': bool(GROQ_API_KEY),
-        'version': '2.1.0'
+        'limpieza_activada': True,
+        'version': '2.2.0'
     })
 
 @app.route('/api/camara/stream', methods=['POST'])
@@ -464,6 +506,9 @@ def procesar_stream_camara():
         
         # Describir imagen en el idioma solicitado
         descripcion = describir_imagen(image_bytes, idioma)
+        
+        # Asegurar que está limpia
+        descripcion = limpiar_respuesta_groq(descripcion)
         
         # Generar audio
         session_id = uuid.uuid4().hex[:8]
@@ -501,22 +546,24 @@ def estado_sistema():
     """Retorna estado del sistema."""
     return jsonify({
         'modelo': {
-            'nombre': 'Groq Vision' if GROQ_API_KEY else 'Técnico (fallback)',
+            'nombre': GROQ_MODELO if GROQ_API_KEY else 'Técnico (fallback)',
             'gratuito': True,
             'memoria_mb': '< 50',
             'tipo': 'API externa (groq.com)',
             'groq_configurada': bool(GROQ_API_KEY),
             'descripcion_contenido_real': bool(GROQ_API_KEY),
-            'soporta_multiidioma': True
+            'soporta_multiidioma': True,
+            'limpieza_think_tags': True
         },
         'camara': {
             'activa': True,
             'gratuita': True,
-            'fps': 0.33
+            'fps': 0.33,
+            'idiomas_soportados': True
         },
         'produccion': EN_PRODUCCION,
         'idiomas': list(IDIOMAS.keys()),
-        'version': '2.1.0'
+        'version': '2.2.0'
     })
 
 # ============================================================
@@ -525,13 +572,15 @@ def estado_sistema():
 
 if __name__ == '__main__':
     print("=" * 55)
-    print("🚀 Voz Visible — Versión 2.1 con Soporte Multiidioma")
+    print("🚀 Voz Visible — Versión 2.2 FIXED")
     print("=" * 55)
-    print(f"🖼️  Modelo: {'Groq Vision (CONTENIDO REAL)' if GROQ_API_KEY else 'Técnico (fallback)'}")
+    print(f"🖼️  Descripción: Multiidioma con limpieza de respuestas")
+    print(f"🧠 Modelo Groq: {GROQ_MODELO}")
     print(f"📷 Cámara en vivo: ACTIVADA")
     print(f"🌐 Idiomas soportados: {', '.join([IDIOMAS[k]['nombre'] for k in IDIOMAS.keys()])}")
     print(f"💾 Memoria estimada: < 50 MB")
     print(f"💰 Costo: 100% GRATUITO")
+    print(f"🧹 Limpieza de <think> tags: ACTIVADA")
     print("")
     
     if not GROQ_API_KEY:
@@ -542,9 +591,11 @@ if __name__ == '__main__':
         print("")
     else:
         print("✅ Groq API configurada correctamente")
-        print("   ✓ Descripciones en CONTENIDO REAL")
+        print("   ✓ Modelo: Mixtral 8x7B (sin thinking tags)")
+        print("   ✓ Descripciones LIMPIAS en múltiples idiomas")
         print("   ✓ Soporte en 6 idiomas")
         print("   ✓ Traducción automática con Groq")
+        print("   ✓ Eliminación automática de <think> tags")
         print("")
     
     port = int(os.environ.get('PORT', 5000))
