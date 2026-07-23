@@ -1,6 +1,6 @@
 # ============================================================
 # Voz Visible — Generador de audiodescripciones inclusivas
-# Con DeepSeek para imágenes y cámara en vivo
+# Con DeepSeek VL para imágenes y cámara en vivo
 # ============================================================
 
 import os
@@ -31,6 +31,10 @@ GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+
+# ⚠️ IMPORTANTE: Usar deepseek-vl que SÍ soporta imágenes
+MODELO_DEEPSEEK = "deepseek-vl"  # <--- CAMBIO CLAVE
+
 EN_PRODUCCION = os.environ.get('RENDER') == 'true' or os.environ.get('PORT') is not None
 
 app = Flask(__name__)
@@ -133,40 +137,34 @@ def ejecutar_con_reintentos(func, *args, **kwargs):
     raise Exception("Máximo de reintentos alcanzado")
 
 # ============================================================
-# FUNCIÓN PRINCIPAL PARA DEEPSEEK (VERSIÓN CORREGIDA)
+# FUNCIÓN PRINCIPAL PARA DEEPSEEK VL (CON IMÁGENES)
 # ============================================================
 def describir_imagen_deepseek(imagen_bytes: bytes, prompt_texto: str) -> str:
-    """Envía imagen a DeepSeek y devuelve descripción."""
+    """Envía imagen a DeepSeek VL y devuelve descripción."""
     
     if not DEEPSEEK_API_KEY:
         raise Exception("DEEPSEEK_API_KEY no configurada")
 
     try:
-        # 1. Procesar imagen con PIL
+        # Procesar imagen con PIL
         with Image.open(io.BytesIO(imagen_bytes)) as img:
-            # Redimensionar a máximo 800px
             max_size = 800
             if max(img.size) > max_size:
                 ratio = max_size / max(img.size)
                 new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
                 img = img.resize(new_size, Image.Resampling.LANCZOS)
             
-            # Convertir a RGB
             if img.mode in ('RGBA', 'LA', 'P'):
                 img = img.convert('RGB')
             
-            # Guardar en buffer
             buffer = io.BytesIO()
             img.save(buffer, format='JPEG', quality=80)
             imagen_bytes = buffer.getvalue()
     except Exception as e:
         print(f"⚠️ Error procesando imagen con PIL: {e}")
-        # Si falla, usar los bytes originales
 
-    # 2. Codificar a base64
+    # Codificar a base64
     imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
-    
-    # 3. Crear URL de datos
     data_url = f"data:image/jpeg;base64,{imagen_base64}"
 
     headers = {
@@ -174,8 +172,9 @@ def describir_imagen_deepseek(imagen_bytes: bytes, prompt_texto: str) -> str:
         "Content-Type": "application/json"
     }
     
+    # Payload para deepseek-vl (soporta imágenes)
     payload = {
-        "model": "deepseek-chat",
+        "model": MODELO_DEEPSEEK,  # deepseek-vl
         "messages": [
             {
                 "role": "user",
@@ -197,12 +196,50 @@ def describir_imagen_deepseek(imagen_bytes: bytes, prompt_texto: str) -> str:
     def _describir():
         response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
         
-        # Log para debugging
         print(f"📡 DeepSeek response status: {response.status_code}")
         if response.status_code != 200:
             print(f"❌ Error response: {response.text[:200]}")
             response.raise_for_status()
             
+        data = response.json()
+        return data["choices"][0]["message"]["content"].strip()
+    
+    return ejecutar_con_reintentos(_describir)
+
+# ============================================================
+# FUNCIÓN ALTERNATIVA (SI deepseek-vl falla)
+# ============================================================
+def describir_imagen_deepseek_alternativo(imagen_bytes: bytes, prompt_texto: str) -> str:
+    """Versión alternativa con formato markdown para la imagen."""
+    if not DEEPSEEK_API_KEY:
+        raise Exception("DEEPSEEK_API_KEY no configurada")
+
+    # Codificar a base64
+    imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
+    
+    # Formato alternativo: imagen como markdown en el texto
+    contenido = f"{prompt_texto}\n\n![image](data:image/jpeg;base64,{imagen_base64})"
+    
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": MODELO_DEEPSEEK,  # deepseek-vl
+        "messages": [
+            {
+                "role": "user",
+                "content": contenido
+            }
+        ],
+        "max_tokens": 300,
+        "temperature": 0.4
+    }
+    
+    def _describir():
+        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
     
@@ -220,7 +257,7 @@ def traducir_texto_deepseek(texto: str, idioma_destino: str) -> str:
     }
     
     payload = {
-        "model": "deepseek-chat",
+        "model": MODELO_DEEPSEEK,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 200,
         "temperature": 0.3
@@ -288,7 +325,12 @@ def procesar_todo_inclusivo(
     else:
         prompt = PROMPT_AUDIODESCRIPCION_ESTANDAR
 
-    descripcion_es = describir_imagen_deepseek(imagen_bytes, prompt)
+    try:
+        descripcion_es = describir_imagen_deepseek(imagen_bytes, prompt)
+    except Exception as e:
+        print(f"⚠️ Error con formato estándar, probando alternativo...")
+        descripcion_es = describir_imagen_deepseek_alternativo(imagen_bytes, prompt)
+    
     descripciones = {}
     if "es" in idiomas_elegidos:
         descripciones["es"] = descripcion_es
@@ -388,7 +430,7 @@ def generar():
 
 @app.route('/analizar-camara', methods=['POST'])
 def analizar_camara():
-    """Analiza un fotograma de cámara con DeepSeek."""
+    """Analiza un fotograma de cámara con DeepSeek VL."""
     
     if not DEEPSEEK_API_KEY:
         return jsonify({
@@ -428,20 +470,26 @@ def analizar_camara():
                 'mensaje': f'Espera {tiempo_espera} segundos'
             }), 429
 
-        # Analizar con DeepSeek
+        # Analizar con DeepSeek VL
         if modo_detalle:
             prompt = PROMPT_ANALISIS_DETALLADO_CAMARA
         else:
             prompt = PROMPT_CAMARA_EN_VIVO
 
         print(f"📷 Analizando fotograma... (modo: {'detallado' if modo_detalle else 'rápido'})")
-        descripcion = describir_imagen_deepseek(image_bytes, prompt)
+        
+        try:
+            descripcion = describir_imagen_deepseek(image_bytes, prompt)
+        except Exception as e:
+            print(f"⚠️ Error con formato estándar, probando alternativo...")
+            descripcion = describir_imagen_deepseek_alternativo(image_bytes, prompt)
+            
         print(f"✅ Descripción: {descripcion[:100]}...")
 
         return jsonify({
             'descripcion': descripcion,
             'modo': 'detallado' if modo_detalle else 'rápido',
-            'modelo': 'DeepSeek'
+            'modelo': MODELO_DEEPSEEK
         })
 
     except requests.exceptions.RequestException as e:
@@ -460,7 +508,10 @@ def analizar_camara():
 @app.route('/api/estado', methods=['GET'])
 def estado_sistema():
     return jsonify({
-        'deepseek': {'configurada': bool(DEEPSEEK_API_KEY)},
+        'deepseek': {
+            'configurada': bool(DEEPSEEK_API_KEY),
+            'modelo': MODELO_DEEPSEEK
+        },
         'produccion': EN_PRODUCCION,
         'rate_limit': {'minimo_segundos': TIEMPO_MINIMO_ENTRE_SOLICITUDES}
     })
@@ -470,7 +521,7 @@ def estado_sistema():
 # ============================================================
 if __name__ == '__main__':
     print("🚀 Voz Visible iniciado")
-    print(f"🖼️ Modelo: DeepSeek")
+    print(f"🖼️ Modelo: {MODELO_DEEPSEEK} (con soporte para imágenes)")
     print(f"🌐 Entorno: {'Producción' if EN_PRODUCCION else 'Desarrollo'}")
     print(f"✅ DeepSeek API: {'Configurada' if DEEPSEEK_API_KEY else '❌ No configurada'}")
     print("")

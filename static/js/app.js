@@ -66,7 +66,7 @@
   }
 
   // ============================================================
-  // 4. CÁMARA EN VIVO CON DEEPSEEK
+  // 4. CÁMARA EN VIVO CON DEEPSEEK VL
   // ============================================================
   var video = document.getElementById("webcam");
   var canvas = document.getElementById("canvas");
@@ -106,7 +106,7 @@
   }
 
   // ============================================================
-  // 4.2 CAPTURAR Y PROCESAR IMAGEN
+  // 4.2 CAPTURAR Y PROCESAR IMAGEN (MODO RÁPIDO)
   // ============================================================
   function captureAndProcess() {
     if (!isRunning || analizando) return;
@@ -115,13 +115,16 @@
     setStatus(true, "📷 Capturando...");
 
     try {
+      // Configurar canvas con las dimensiones del video
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 480;
       var ctx = canvas.getContext("2d");
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
+      // Generar la imagen en base64 con formato JPEG
       var imageData = canvas.toDataURL("image/jpeg", 0.8);
 
+      // Enviar al servidor
       fetch("/analizar-camara", {
         method: "POST",
         headers: {
@@ -131,7 +134,8 @@
           imagen: imageData,
           detalle: false
         }),
-        timeout: 15000
+        // Timeout de 15 segundos
+        signal: AbortSignal.timeout(15000)
       })
       .then(function(response) {
         if (!response.ok) {
@@ -158,8 +162,13 @@
       .catch(function(error) {
         analizando = false;
         console.error("Error en fetch:", error);
-        setDescripcion("❌ Error de conexión. Reintentando...");
-        setStatus(false, "Error de conexión");
+        if (error.name === "TimeoutError" || error.name === "AbortError") {
+          setDescripcion("⏳ Tiempo de espera agotado. Reintentando...");
+          setStatus(false, "Timeout");
+        } else {
+          setDescripcion("❌ Error de conexión. Reintentando...");
+          setStatus(false, "Error de conexión");
+        }
       });
 
     } catch (error) {
@@ -171,7 +180,7 @@
   }
 
   // ============================================================
-  // 4.3 ANÁLISIS DETALLADO
+  // 4.3 ANÁLISIS DETALLADO (MODO DETALLADO)
   // ============================================================
   function captureAndProcessDetailed() {
     if (!isRunning || analizando) return;
@@ -196,7 +205,7 @@
           imagen: imageData,
           detalle: true
         }),
-        timeout: 20000
+        signal: AbortSignal.timeout(20000)
       })
       .then(function(response) {
         if (!response.ok) {
@@ -222,8 +231,13 @@
       .catch(function(error) {
         analizando = false;
         console.error("Error en análisis detallado:", error);
-        setDescripcion("❌ Error en análisis detallado");
-        setStatus(false, "Error");
+        if (error.name === "TimeoutError" || error.name === "AbortError") {
+          setDescripcion("⏳ Tiempo de espera agotado para análisis detallado");
+          setStatus(false, "Timeout");
+        } else {
+          setDescripcion("❌ Error en análisis detallado");
+          setStatus(false, "Error");
+        }
       });
 
     } catch (error) {
@@ -250,19 +264,28 @@
     }
 
     // Verificar que la API de DeepSeek está configurada
+    setStatus(true, "🔍 Verificando configuración...");
+    setDescripcion("Verificando conexión con DeepSeek...");
+
     fetch("/api/estado")
-      .then(function(response) { return response.json(); })
+      .then(function(response) { 
+        if (!response.ok) {
+          throw new Error("Error al verificar estado");
+        }
+        return response.json(); 
+      })
       .then(function(data) {
         if (!data.deepseek || !data.deepseek.configurada) {
           setDescripcion("❌ DeepSeek no está configurado. Contacta al administrador.");
           setStatus(false, "API no configurada");
           return;
         }
+        console.log("✅ DeepSeek configurado correctamente. Modelo:", data.deepseek.modelo);
         iniciarCamara();
       })
       .catch(function(error) {
         console.error("Error verificando estado:", error);
-        setDescripcion("❌ Error verificando configuración");
+        setDescripcion("❌ Error verificando configuración: " + error.message);
         setStatus(false, "Error");
       });
   });
@@ -273,8 +296,12 @@
         facingMode: "environment",
         width: { ideal: 640 },
         height: { ideal: 480 }
-      }
+      },
+      audio: false
     };
+
+    setStatus(true, "📷 Solicitando acceso a la cámara...");
+    setDescripcion("Solicitando permisos de cámara...");
 
     navigator.mediaDevices.getUserMedia(constraints)
       .then(function(mediaStream) {
@@ -289,15 +316,30 @@
         setStatus(true, "✅ Cámara activa");
         setDescripcion("📷 Observando entorno...");
 
+        // Iniciar análisis automático cada 3 segundos
         if (intervalId) clearInterval(intervalId);
         intervalId = setInterval(captureAndProcess, 3000);
 
+        // Análisis inmediato después de iniciar
         setTimeout(captureAndProcess, 500);
+
+        console.log("✅ Cámara iniciada correctamente");
       })
       .catch(function(error) {
         console.error("Error accediendo a la cámara:", error);
         setStatus(false, "❌ Error al acceder a la cámara");
-        setDescripcion("❌ No se pudo acceder a la cámara. Verifica permisos.");
+        
+        var mensajeError = "❌ No se pudo acceder a la cámara. ";
+        if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") {
+          mensajeError += "Permiso denegado. Verifica los permisos en el navegador.";
+        } else if (error.name === "NotFoundError" || error.name === "DevicesNotFoundError") {
+          mensajeError += "No se encontró ninguna cámara conectada.";
+        } else if (error.name === "NotReadableError" || error.name === "TrackStartError") {
+          mensajeError += "La cámara está siendo usada por otra aplicación.";
+        } else {
+          mensajeError += "Error: " + error.message;
+        }
+        setDescripcion(mensajeError);
         btnStart.disabled = false;
       });
   }
@@ -310,16 +352,21 @@
   });
 
   function detenerCamara() {
+    // Detener intervalo de análisis
     if (intervalId) {
       clearInterval(intervalId);
       intervalId = null;
     }
 
+    // Detener todos los tracks de la cámara
     if (stream) {
-      stream.getTracks().forEach(function(track) { track.stop(); });
+      stream.getTracks().forEach(function(track) { 
+        track.stop(); 
+      });
       stream = null;
     }
 
+    // Limpiar el video
     if (video) {
       video.srcObject = null;
     }
@@ -330,6 +377,8 @@
     btnStop.disabled = true;
     setStatus(false, "⏹️ Cámara detenida");
     setDescripcion("Presiona 'Iniciar Cámara' para comenzar a describir tu entorno...");
+    
+    console.log("⏹️ Cámara detenida");
   }
 
   // ============================================================
@@ -342,6 +391,7 @@
         captureAndProcessDetailed();
       } else {
         setDescripcion("⚠️ Inicia la cámara primero");
+        setStatus(false, "Cámara no iniciada");
       }
     });
   }
@@ -354,20 +404,42 @@
   });
 
   // ============================================================
-  // 4.8 DETECTAR CUANDO LA PÁGINA SE VUELVE VISIBLE
+  // 4.8 DETECTAR CUANDO LA PÁGINA SE VUELVE VISIBLE/OCULTA
   // ============================================================
   document.addEventListener("visibilitychange", function() {
     if (document.hidden && isRunning) {
+      // Pausar análisis cuando la página no está visible
       if (intervalId) {
         clearInterval(intervalId);
         intervalId = null;
+        console.log("⏸️ Análisis pausado (página oculta)");
       }
     } else if (!document.hidden && isRunning) {
+      // Reanudar análisis cuando la página vuelve a ser visible
       if (!intervalId) {
         intervalId = setInterval(captureAndProcess, 3000);
+        console.log("▶️ Análisis reanudado (página visible)");
+        // Análisis inmediato al volver
+        setTimeout(captureAndProcess, 500);
       }
     }
   });
 
+  // ============================================================
+  // 4.9 RECUPERAR CÁMARA SI SE PIERDE LA CONEXIÓN
+  // ============================================================
+  // Si el video se detiene inesperadamente, intentar recuperar
+  if (video) {
+    video.addEventListener("pause", function() {
+      if (isRunning && stream) {
+        console.log("⚠️ Video pausado inesperadamente. Intentando reanudar...");
+        video.play().catch(function(e) {
+          console.error("Error al reanudar video:", e);
+        });
+      }
+    });
+  }
+
   console.log("✅ Voz Visible - app.js cargado correctamente");
+  console.log("📷 Para usar la cámara, presiona 'Iniciar Cámara'");
 })();
