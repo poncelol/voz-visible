@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voz Visible — Prepara una audiodescripción para alguien</title>
+<meta name="description" content="Herramienta para que familiares, docentes y personas cuidadoras preparen audiodescripciones claras y en varios idiomas para personas con discapacidad visual o cognitiva.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<a href="#formulario" class="skip-link">Saltar al formulario</a>
+
+<header class="site">
+  <div class="wrap site-inner">
+    <a href="#top" class="wordmark"><span class="dot" aria-hidden="true"></span>Voz&nbsp;Visible</a>
+    <div class="a11y-controls">
+      <button type="button" class="a11y-btn" id="btn-font-menos" aria-label="Reducir tamaño de texto">A−</button>
+      <button type="button" class="a11y-btn" id="btn-font-mas" aria-label="Aumentar tamaño de texto">A+</button>
+      <button type="button" class="a11y-btn" id="btn-contraste" aria-pressed="false">Alto contraste</button>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <p class="eyebrow">Para quien acompaña</p>
+        <h1>Prepara una imagen para <em>que la puedan escuchar.</em></h1>
+        <p class="lede">
+          Esta página es para ti: familiar, docente, persona cuidadora o profesional de accesibilidad.
+          Sube o describe una imagen, elige el nivel de lectura y el idioma, y en un momento
+          tienes un audio mp3 listo para compartir con la persona a la que acompañas.
+        </p>
+        <div class="cta-row">
+          <a href="#formulario" class="btn btn-primary">Empezar</a>
+          <a href="#como-funciona" class="btn btn-ghost">Cómo funciona</a>
+        </div>
+      </div>
+      <div class="demo-card">
+        <p class="eyebrow" style="margin-bottom:.4rem;">Ejemplo de resultado</p>
+        <p class="demo-line">"Una cocina luminosa. Dos personas cocinan juntas. La mujer revuelve una olla. El hombre pela verduras."</p>
+        <p class="hint">Nivel simplificado · listo en español, inglés y francés · un mp3 real por idioma</p>
+      </div>
+    </div>
+  </section>
+
+  {% if not api_configurada %}
+  <section>
+    <div class="wrap">
+      <div class="error-box" role="alert">
+        Esta instalación todavía no tiene configurada la clave de Gemini
+        (<code>GEMINI_API_KEY</code> en el archivo <code>.env</code> del servidor).
+        Pídeselo a la persona que administra esta página; el formulario no funcionará hasta entonces.
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="studio" id="formulario">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Genera la audiodescripción</h2>
+        <p>Rellena esto una vez por cada imagen que quieras convertir en audio.</p>
+      </div>
+
+      <div class="studio-grid">
+        <form class="panel" id="form-config" method="post" action="{{ url_for('generar') }}" enctype="multipart/form-data">
+          <h3>1 · La imagen</h3>
+
+          <fieldset>
+            <legend>¿De dónde sale la imagen?</legend>
+            <div class="source-toggle" role="group" aria-label="Origen de la imagen">
+              <button type="button" id="src-generar" aria-pressed="{{ 'true' if valores.origen != 'subir' else 'false' }}">Generar con IA</button>
+              <button type="button" id="src-subir" aria-pressed="{{ 'true' if valores.origen == 'subir' else 'false' }}">Subir una foto</button>
+            </div>
+            <input type="hidden" name="origen" id="input-origen" value="{{ valores.origen }}">
+
+            <div id="bloque-generar" {% if valores.origen == 'subir' %}style="display:none;"{% endif %}>
+              <label class="field-label" for="input-prompt">Descríbela y la creamos</label>
+              <input type="text" id="input-prompt" name="prompt" value="{{ valores.prompt }}">
+              <p class="hint">Se genera gratis con Pollinations.ai.</p>
+            </div>
+            <div id="bloque-subir" {% if valores.origen != 'subir' %}style="display:none;"{% endif %}>
+              <label class="field-label" for="input-file">Elige una foto de tu dispositivo</label>
+              <input type="file" id="input-file" name="imagen" accept="image/*">
+              <p class="hint">Formatos admitidos: JPG, PNG, WEBP. Máximo 12 MB.</p>
+            </div>
+          </fieldset>
+
+          <h3>2 · Cómo debe sonar</h3>
+
+          <fieldset>
+            <legend>Nivel de lectura</legend>
+            <div class="radio-row">
+              <div class="pill-option">
+                <input type="radio" name="nivel" id="nivel-estandar" value="estándar" {{ 'checked' if valores.nivel != 'simplificada' }}>
+                <label for="nivel-estandar">Estándar (4 frases)</label>
+              </div>
+              <div class="pill-option">
+                <input type="radio" name="nivel" id="nivel-simple" value="simplificada" {{ 'checked' if valores.nivel == 'simplificada' }}>
+                <label for="nivel-simple">Lectura fácil (3 frases muy cortas)</label>
+              </div>
+            </div>
+            <p class="hint">Elige «lectura fácil» para discapacidad cognitiva o dificultades de comprensión lectora.</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>Idiomas del audio</legend>
+            <div class="check-grid">
+              {% for codigo, info in idiomas.items() %}
+              <div class="pill-option">
+                <input type="checkbox" name="idiomas" id="idi-{{ codigo }}" value="{{ codigo }}" {{ 'checked' if codigo in valores.idiomas }}>
+                <label for="idi-{{ codigo }}">{{ codigo.upper() }} · {{ info.nombre }}</label>
+              </div>
+              {% endfor %}
+            </div>
+            <p class="hint">Se genera un archivo mp3 independiente por cada idioma marcado.</p>
+          </fieldset>
+
+          <div class="switch-row">
+            <div class="txt">
+              <strong>Traducir también el texto</strong>
+              <span>Si está apagado, el texto se queda en español y solo cambia la voz del audio</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" name="traducir" {{ 'checked' if valores.traducir }}>
+              <span class="track"><span class="thumb"></span></span>
+            </label>
+          </div>
+
+          <button type="submit" class="btn btn-primary run-btn" {{ 'disabled' if not api_configurada }}>
+            Generar audiodescripción
+          </button>
+          <p class="hint" style="margin-top:.6rem;">Puede tardar de 5 a 20 segundos: la imagen, la descripción y cada audio se procesan en el servidor.</p>
+
+          {% if error %}
+          <div class="error-box" role="alert">{{ error }}</div>
+          {% endif %}
+        </form>
+
+        <div class="panel" id="panel-resultado">
+          <h3>3 · Resultado</h3>
+          {% if not resultado %}
+          <div class="result-empty">
+            <p>Aquí aparecerá la imagen, el texto por idioma y un botón de reproducción para cada audio mp3, listo para descargar y compartir.</p>
+          </div>
+          {% else %}
+          <img class="result-image" src="{{ resultado.imagen_url }}" alt="Imagen procesada. Nivel de lectura: {{ resultado.nivel_cognitivo }}.">
+          {% for codigo, texto in resultado.descripciones.items() %}
+          <div class="lang-card">
+            <div class="lang-card-head">
+              <span class="lang-tag">{{ codigo.upper() }} · {{ idiomas[codigo].nombre }}</span>
+            </div>
+            <p class="desc">{{ texto }}</p>
+            <audio controls preload="none" src="{{ resultado.audios_url[codigo] }}" style="width:100%;">
+              Tu navegador no admite la reproducción de audio integrada; usa el enlace de descarga.
+            </audio>
+            <p class="hint" style="margin-top:.5rem;">
+              <a href="{{ resultado.audios_url[codigo] }}" download>Descargar mp3 en {{ idiomas[codigo].nombre.lower() }}</a>
+            </p>
+          </div>
+          {% endfor %}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="como-funciona">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Cómo funciona</h2>
+        <p>Todo ocurre en el servidor, en este orden, cada vez que pulsas «Generar».</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <p class="num">01</p>
+          <h3>La imagen llega</h3>
+          <p>Se genera con Pollinations.ai o la subes tú desde tu dispositivo.</p>
+        </div>
+        <div class="step">
+          <p class="num">02</p>
+          <h3>Gemini la describe</h3>
+          <p>Un modelo de visión escribe una descripción objetiva en el nivel de lectura elegido, y la traduce si lo pides.</p>
+        </div>
+        <div class="step">
+          <p class="num">03</p>
+          <h3>gTTS crea el audio</h3>
+          <p>Se genera un mp3 real por idioma, listo para reproducir aquí mismo o para enviar por WhatsApp, correo o donde lo necesite la persona.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="studio" style="border-top:1px solid var(--line);">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Poner esta página en un servidor</h2>
+        <p>Es una app Flask normal. Resumen rápido — instrucciones completas en el <code>README.md</code> del proyecto.</p>
+      </div>
+      <div class="deploy-grid">
+        <div class="deploy-card">
+          <h3>En local</h3>
+          <ol>
+            <li><code>pip install -r requirements.txt</code></li>
+            <li>Copia <code>.env.example</code> a <code>.env</code> y añade tu <code>GEMINI_API_KEY</code></li>
+            <li><code>python app.py</code> y abre <code>http://localhost:5000</code></li>
+          </ol>
+        </div>
+        <div class="deploy-card">
+          <h3>En un servidor (producción)</h3>
+          <ol>
+            <li>Sube la carpeta del proyecto</li>
+            <li>Define la variable de entorno <code>GEMINI_API_KEY</code> en el panel del hosting</li>
+            <li>Arranca con <code>gunicorn app:app</code></li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Voz Visible — construida con Flask, Gemini (descripción y traducción), gTTS (voz) y Pollinations.ai (imagen). Los archivos generados se guardan en <code>static/generated/</code> en el servidor.</p>
+  </div>
+</footer>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
