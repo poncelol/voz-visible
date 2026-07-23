@@ -7,6 +7,7 @@ import os
 import uuid
 import base64
 import time
+import openai  # Para DeepSeek API
 from pathlib import Path
 from urllib.parse import quote
 from datetime import datetime, timedelta
@@ -450,6 +451,9 @@ def estado_cuota():
 # ============================================================
 # EJECUCIÓN
 # ============================================================
+# ============================================================
+# EJECUCIÓN
+# ============================================================
 if __name__ == '__main__':
     print("🚀 Voz Visible iniciado")
     print(f"📊 Modelo para imágenes: {MODELO_GEMINI} (Gemini)")
@@ -459,4 +463,7 @@ if __name__ == '__main__':
     print("")
     print(f"✅ Gemini API: {'Configurada' if GEMINI_API_KEY else '❌ No configurada'}")
     print(f"✅ DeepSeek API: {'Configurada' if DEEPSEEK_API_KEY else '❌ No configurada'}")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    
+    # Para producción en Render, usar el puerto de la variable de entorno
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)

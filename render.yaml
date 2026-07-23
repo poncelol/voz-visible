@@ -1,8 +1,3 @@
-# Blueprint de Render — despliegue con un clic.
-# En Render: New + → Blueprint → conecta este repositorio → Render lee este
-# archivo y configura el servicio automáticamente. Solo te pedirá el valor
-# de GEMINI_API_KEY (no lo pongas aquí, es secreto).
-
 services:
   - type: web
     name: voz-visible
@@ -12,14 +7,14 @@ services:
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
+      # Verificar que gunicorn se instaló
+      pip show gunicorn || pip install gunicorn==22.0.0
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 180 --workers 1 --log-level debug
     healthCheckPath: /
     envVars:
       - key: GEMINI_API_KEY
-        sync: false          # Render te pedirá pegarla manualmente en el panel
+        sync: false
       - key: DEEPSEEK_API_KEY
-        sync: false          # Para DeepSeek
+        sync: false
       - key: PYTHON_VERSION
         value: 3.11.8
-      - key: PORT
-        value: 10000
