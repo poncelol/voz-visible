@@ -9,11 +9,17 @@ services:
     runtime: python
     plan: free
     branch: main
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
     healthCheckPath: /
     envVars:
       - key: GEMINI_API_KEY
-        sync: false          # Render te pedirá pegarla manualmente en el panel, no queda en el repo
+        sync: false          # Render te pedirá pegarla manualmente en el panel
+      - key: DEEPSEEK_API_KEY
+        sync: false          # Para DeepSeek
       - key: PYTHON_VERSION
-        value: 3.11.9
+        value: 3.11.8
+      - key: PORT
+        value: 10000
