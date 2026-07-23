@@ -1,12 +1,12 @@
 # ============================================================
-# Voz Visible — Versión con Hugging Face API
-# 100% gratuito, sin PyTorch, < 100 MB RAM
+# Voz Visible — Versión con BLIP LOCAL (CONTENIDO REAL)
 # ============================================================
 
 import os
 import uuid
 import base64
 import io
+import gc
 from pathlib import Path
 from urllib.parse import quote
 from datetime import datetime
@@ -17,6 +17,18 @@ from dotenv import load_dotenv
 from flask import Flask, render_template, request, url_for, jsonify
 from gtts import gTTS
 from PIL import Image, ImageStat
+
+# ============================================================
+# IMPORTAR BLIP LOCAL
+# ============================================================
+try:
+    from transformers import BlipProcessor, BlipForConditionalGeneration
+    import torch
+    BLIP_DISPONIBLE = True
+    print("✅ BLIP disponible")
+except ImportError:
+    BLIP_DISPONIBLE = False
+    print("❌ BLIP no disponible")
 
 load_dotenv()
 
@@ -31,6 +43,35 @@ app.secret_key = os.environ.get("SECRET_KEY", "tu-clave-secreta-aqui")
 EN_PRODUCCION = os.environ.get('RENDER') == 'true'
 
 # ============================================================
+# CARGAR BLIP
+# ============================================================
+processor = None
+model = None
+
+if BLIP_DISPONIBLE:
+    print("🔄 Cargando BLIP...")
+    try:
+        # Usar cache para evitar descargas repetidas
+        cache_dir = os.path.join(BASE_DIR, "model_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        processor = BlipProcessor.from_pretrained(
+            "Salesforce/blip-image-captioning-base",
+            cache_dir=cache_dir
+        )
+        model = BlipForConditionalGeneration.from_pretrained(
+            "Salesforce/blip-image-captioning-base",
+            cache_dir=cache_dir
+        )
+        model.eval()
+        print("✅ BLIP cargado correctamente")
+    except Exception as e:
+        print(f"❌ Error cargando BLIP: {e}")
+        BLIP_DISPONIBLE = False
+        processor = None
+        model = None
+
+# ============================================================
 # IDIOMAS
 # ============================================================
 IDIOMAS = {
@@ -43,84 +84,43 @@ IDIOMAS = {
 }
 
 # ============================================================
-# FUNCIÓN PARA DESCRIBIR CON HUGGING FACE (GRATIS)
+# DESCRIBIR CON BLIP LOCAL (CONTENIDO REAL)
 # ============================================================
 
-def describir_con_huggingface(imagen_bytes: bytes) -> str:
-    """
-    Usa Hugging Face Inference API (gratuito, sin API key).
-    Modelo: BLIP-base (descripciones de contenido REAL)
-    """
+def describir_con_blip(imagen_bytes: bytes) -> str:
+    """Usa BLIP local para describir el CONTENIDO REAL."""
+    if not BLIP_DISPONIBLE or model is None or processor is None:
+        return None
+    
     try:
-        # Codificar imagen a base64
-        imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
+        # Abrir imagen
+        imagen = Image.open(io.BytesIO(imagen_bytes))
         
-        # API de Hugging Face (gratuita, sin token para modelos públicos)
-        # Usamos BLIP que describe contenido real
-        API_URL = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base"
+        # Reducir si es muy grande (ahorra memoria)
+        max_size = 800
+        if imagen.width > max_size or imagen.height > max_size:
+            imagen.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
         
-        headers = {
-            "Content-Type": "application/json"
-            # No necesitas token para modelos públicos con rate limit
-        }
+        # Procesar con BLIP
+        inputs = processor(imagen, return_tensors="pt")
         
-        payload = {
-            "inputs": imagen_base64,
-            "parameters": {
-                "max_length": 50,
-                "num_beams": 4
-            }
-        }
+        with torch.no_grad():
+            out = model.generate(
+                **inputs,
+                max_length=50,
+                num_beams=4,
+                temperature=0.7
+            )
+            descripcion = processor.decode(out[0], skip_special_tokens=True)
         
-        print(f"📤 Enviando a Hugging Face...")
+        if descripcion and len(descripcion) > 10:
+            print(f"✅ BLIP: {descripcion}")
+            return descripcion
         
-        response = requests.post(
-            API_URL,
-            json=payload,
-            headers=headers,
-            timeout=30
-        )
-        
-        print(f"📥 Respuesta: {response.status_code}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Procesar respuesta
-            if isinstance(data, list) and len(data) > 0:
-                if isinstance(data[0], dict) and "generated_text" in data[0]:
-                    descripcion = data[0]["generated_text"]
-                    if descripcion and len(descripcion) > 10:
-                        print(f"✅ Hugging Face: {descripcion}")
-                        return descripcion
-            elif isinstance(data, dict) and "generated_text" in data:
-                descripcion = data["generated_text"]
-                if descripcion and len(descripcion) > 10:
-                    print(f"✅ Hugging Face: {descripcion}")
-                    return descripcion
-        
-        # Si el rate limit está activo (429), esperar y reintentar
-        if response.status_code == 429:
-            print("⏳ Rate limit de Hugging Face, esperando...")
-            time.sleep(3)
-            # Reintentar una vez
-            response = requests.post(API_URL, json=payload, headers=headers, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if isinstance(data, list) and len(data) > 0:
-                    if isinstance(data[0], dict) and "generated_text" in data[0]:
-                        descripcion = data[0]["generated_text"]
-                        if descripcion and len(descripcion) > 10:
-                            return descripcion
-        
-        print("⚠️ Hugging Face no respondió correctamente")
         return None
         
-    except requests.exceptions.Timeout:
-        print("⏰ Timeout en Hugging Face")
-        return None
     except Exception as e:
-        print(f"❌ Error en Hugging Face: {e}")
+        print(f"❌ Error en BLIP: {e}")
         return None
 
 # ============================================================
@@ -128,12 +128,12 @@ def describir_con_huggingface(imagen_bytes: bytes) -> str:
 # ============================================================
 
 def describir_tecnico(imagen_bytes: bytes) -> str:
-    """Descripción técnica (fallback cuando la API falla)."""
+    """Descripción técnica (fallback)."""
     try:
         imagen = Image.open(io.BytesIO(imagen_bytes))
         ancho, alto = imagen.size
         
-        # Color dominante
+        # Color
         img_pequena = imagen.resize((50, 50))
         colores = img_pequena.getcolors(2500)
         color = "varios colores"
@@ -157,16 +157,7 @@ def describir_tecnico(imagen_bytes: bytes) -> str:
         gris = imagen.convert('L')
         stat = ImageStat.Stat(gris)
         brillo = stat.mean[0]
-        if brillo > 200:
-            brillo_texto = "muy brillante"
-        elif brillo > 150:
-            brillo_texto = "brillante"
-        elif brillo > 100:
-            brillo_texto = "luminosidad media"
-        elif brillo > 50:
-            brillo_texto = "oscuro"
-        else:
-            brillo_texto = "muy oscuro"
+        brillo_texto = "muy brillante" if brillo > 200 else "brillante" if brillo > 150 else "luminosidad media" if brillo > 100 else "oscuro" if brillo > 50 else "muy oscuro"
         
         # Forma
         if ancho > alto * 1.5:
@@ -177,19 +168,18 @@ def describir_tecnico(imagen_bytes: bytes) -> str:
             forma = "cuadrada"
         
         return f"Imagen {forma}, colores {color}, {brillo_texto}."
-        
     except:
         return "Imagen capturada por la cámara."
 
 # ============================================================
-# FUNCIÓN PRINCIPAL DE DESCRIPCIÓN
+# FUNCIÓN PRINCIPAL
 # ============================================================
 
 def describir_imagen(imagen_bytes: bytes) -> str:
-    """Intenta con Hugging Face primero, luego fallback."""
+    """Intenta BLIP primero, luego fallback."""
     
-    # Intentar con Hugging Face
-    descripcion = describir_con_huggingface(imagen_bytes)
+    # Intentar con BLIP (CONTENIDO REAL)
+    descripcion = describir_con_blip(imagen_bytes)
     if descripcion:
         return descripcion
     
@@ -218,7 +208,7 @@ def generar_imagen_ia(prompt: str, ruta_salida: Path) -> Path:
     return ruta_salida
 
 # ============================================================
-# PROCESAMIENTO PRINCIPAL
+# PROCESAMIENTO
 # ============================================================
 
 def procesar_todo_inclusivo(
@@ -251,13 +241,11 @@ def procesar_todo_inclusivo(
     # DESCRIBIR
     descripcion_es = describir_imagen(imagen_bytes)
     
-    # Si es nivel simplificado, acortar
     if nivel_cognitivo == "simplificada":
         frases = descripcion_es.split('. ')
         if len(frases) > 3:
             descripcion_es = '. '.join(frases[:3]) + '.'
 
-    # Generar descripciones por idioma
     descripciones = {}
     if "es" in idiomas_elegidos:
         descripciones["es"] = descripcion_es
@@ -267,7 +255,6 @@ def procesar_todo_inclusivo(
             continue
         descripciones[codigo] = descripcion_es
 
-    # Generar audios
     audios = {}
     for codigo in idiomas_elegidos:
         texto_a_leer = descripciones.get(codigo, descripcion_es)
@@ -276,19 +263,19 @@ def procesar_todo_inclusivo(
         generar_audio(texto_a_leer, ruta_audio, idioma_gtts)
         audios[codigo] = ruta_audio.name
 
-    es_ia = "píxeles" not in descripcion_es.lower() and "composición" not in descripcion_es.lower()
+    es_blip = BLIP_DISPONIBLE and "píxeles" not in descripcion_es.lower() and "composición" not in descripcion_es.lower()
 
     return {
         "imagen_nombre": ruta_imagen.name,
         "descripciones": descripciones,
         "audios": audios,
         "nivel_cognitivo": nivel_cognitivo,
-        "modelo_usado": "Hugging Face API" if es_ia else "Técnico (fallback)",
-        "es_ia": es_ia
+        "modelo_usado": "BLIP Local" if es_blip else "Técnico (fallback)",
+        "es_blip": es_blip
     }
 
 # ============================================================
-# RUTAS FLASK
+# RUTAS
 # ============================================================
 
 @app.route("/", methods=["GET"])
@@ -296,7 +283,7 @@ def index():
     return render_template(
         "index.html",
         idiomas=IDIOMAS,
-        api_configurada=True,
+        api_configurada=BLIP_DISPONIBLE,
         en_produccion=EN_PRODUCCION,
         error=None,
         resultado=None,
@@ -306,7 +293,8 @@ def index():
             "origen": "generar",
             "prompt": "Una cocina luminosa con dos personas cocinando",
             "traducir": False
-        }
+        },
+        blip_disponible=BLIP_DISPONIBLE
     )
 
 @app.route("/generar", methods=["POST"])
@@ -339,21 +327,23 @@ def generar():
         return render_template(
             "index.html",
             idiomas=IDIOMAS,
-            api_configurada=True,
+            api_configurada=BLIP_DISPONIBLE,
             en_produccion=EN_PRODUCCION,
             error=None,
             resultado=resultado,
-            valores=valores
+            valores=valores,
+            blip_disponible=BLIP_DISPONIBLE
         )
     except Exception as exc:
         return render_template(
             "index.html",
             idiomas=IDIOMAS,
-            api_configurada=True,
+            api_configurada=BLIP_DISPONIBLE,
             en_produccion=EN_PRODUCCION,
             error=str(exc),
             resultado=None,
-            valores=valores
+            valores=valores,
+            blip_disponible=BLIP_DISPONIBLE
         )
 
 # ============================================================
@@ -365,7 +355,8 @@ def estado_camara():
     return jsonify({
         'activo': True,
         'gratuito': True,
-        'modelo': 'Hugging Face API',
+        'modelo': 'BLIP Local' if BLIP_DISPONIBLE else 'Técnico (fallback)',
+        'blip_disponible': BLIP_DISPONIBLE,
         'version': '2.0.0'
     })
 
@@ -376,7 +367,6 @@ def procesar_stream_camara():
         if not data or 'imagen' not in data:
             return jsonify({'error': 'No se recibió imagen'}), 400
         
-        # Decodificar imagen
         image_data = data['imagen']
         if ',' in image_data:
             _, encoded = image_data.split(',', 1)
@@ -384,10 +374,8 @@ def procesar_stream_camara():
             encoded = image_data
         image_bytes = base64.b64decode(encoded)
         
-        # DESCRIBIR
         descripcion = describir_imagen(image_bytes)
         
-        # Generar audio
         session_id = uuid.uuid4().hex[:8]
         audio_path = GENERATED_DIR / f"{session_id}_camara.mp3"
         generar_audio(descripcion, audio_path, "es")
@@ -400,14 +388,14 @@ def procesar_stream_camara():
         except:
             pass
         
-        es_ia = "píxeles" not in descripcion.lower() and "composición" not in descripcion.lower()
+        es_blip = BLIP_DISPONIBLE and "píxeles" not in descripcion.lower() and "composición" not in descripcion.lower()
         
         return jsonify({
             'descripcion': descripcion,
             'audio': audio_base64,
             'timestamp': datetime.now().isoformat(),
-            'modelo': 'Hugging Face' if es_ia else 'Técnico (fallback)',
-            'es_ia': es_ia
+            'modelo': 'BLIP Local' if es_blip else 'Técnico (fallback)',
+            'es_blip': es_blip
         })
         
     except Exception as e:
@@ -418,10 +406,12 @@ def procesar_stream_camara():
 def estado_sistema():
     return jsonify({
         'modelo': {
-            'nombre': 'Hugging Face API',
+            'nombre': 'BLIP Local' if BLIP_DISPONIBLE else 'Técnico (fallback)',
             'gratuito': True,
-            'memoria_mb': '< 100',
-            'tipo': 'API externa (gratuita)'
+            'memoria_mb': '~500' if BLIP_DISPONIBLE else '< 100',
+            'tipo': 'IA local (Transformers)',
+            'blip_disponible': BLIP_DISPONIBLE,
+            'descripcion_contenido_real': BLIP_DISPONIBLE
         },
         'camara': {
             'activa': True,
@@ -438,17 +428,20 @@ def estado_sistema():
 # ============================================================
 
 if __name__ == '__main__':
-    print("=" * 50)
-    print("🚀 Voz Visible — Versión Hugging Face API")
-    print("=" * 50)
-    print(f"🖼️ Modelo: Hugging Face BLIP (descripciones de CONTENIDO REAL)")
+    print("=" * 55)
+    print("🚀 Voz Visible — Versión con BLIP LOCAL")
+    print("=" * 55)
+    print(f"🖼️ Modelo: {'BLIP Local (CONTENIDO REAL)' if BLIP_DISPONIBLE else 'Técnico (fallback)'}")
     print(f"📷 Cámara en vivo: ACTIVADA")
-    print(f"💾 Memoria estimada: < 100 MB")
-    print(f"💰 Costo: 100% GRATUITO (sin API key)")
-    print(f"🌐 Entorno: {'Producción' if EN_PRODUCCION else 'Desarrollo'}")
+    print(f"💾 Memoria estimada: {'~500 MB' if BLIP_DISPONIBLE else '< 100 MB'}")
+    print(f"💰 Costo: 100% GRATUITO")
+    print("")
+    print("📝 Ejemplo de descripción que verás:")
+    print("   ✅ 'Una mujer está cocinando en una cocina moderna'")
+    print("   ❌ 'Imagen cuadrada, colores negro, muy oscuro'")
     print("")
     
     port = int(os.environ.get('PORT', 5000))
     print(f"🔌 Escuchando en http://localhost:{port}")
-    print("=" * 50)
+    print("=" * 55)
     app.run(host='0.0.0.0', port=port, debug=not EN_PRODUCCION)
