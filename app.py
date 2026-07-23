@@ -4,32 +4,30 @@
 # ============================================================
 
 import os
+import sys
 import uuid
 import base64
 import time
 import json
 import io
-import cv2
-import numpy as np
 from pathlib import Path
 from urllib.parse import quote
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Tuple
+from datetime import datetime
+from typing import Optional, Tuple
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, render_template, request, url_for, jsonify, session
+from flask import Flask, render_template, request, url_for, jsonify
 from gtts import gTTS
 from PIL import Image
-import openai
 
-# Importar Ollama
+# Intentar importar Ollama (opcional)
+OLLAMA_DISPONIBLE = False
 try:
     import ollama
     OLLAMA_DISPONIBLE = True
 except ImportError:
-    OLLAMA_DISPONIBLE = False
-    print("⚠️ Ollama no está instalado. Ejecuta: pip install ollama")
+    print("ℹ️ Ollama no está instalado. La funcionalidad de cámara estará desactivada.")
 
 load_dotenv()
 
@@ -40,35 +38,36 @@ GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================
 # CONFIGURACIÓN DE APIS
 # ============================================================
-# DeepSeek para imágenes
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# Ollama para cámara en vivo
-OLLAMA_MODELO = "llama3.2-vision"  # Modelo de visión de Meta
-OLLAMA_URL = "http://localhost:11434/api/chat"  # URL por defecto de Ollama
+# Ollama para cámara en vivo (solo si está disponible)
+OLLAMA_MODELO = "llama3.2-vision"
+OLLAMA_URL = "http://localhost:11434/api/chat"
+
+# Detectar si estamos en producción (Render)
+EN_PRODUCCION = os.environ.get('RENDER') == 'true' or os.environ.get('PORT') is not None
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024  # 12 MB
+app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 app.secret_key = os.environ.get("SECRET_KEY", "tu-clave-secreta-aqui")
 
 # ============================================================
-# CONFIGURACIÓN DE CUOTA Y RATE LIMITING
+# CONFIGURACIÓN DE CUOTA
 # ============================================================
 ultima_solicitud = {}
-TIEMPO_MINIMO_ENTRE_SOLICITUDES = 3  # segundos para Ollama (más rápido)
+TIEMPO_MINIMO_ENTRE_SOLICITUDES = 3
 MAX_REINTENTOS = 3
-TIEMPO_ESPERA_REINTENTO = 3  # segundos base
 
 # ============================================================
 # IDIOMAS SOPORTADOS
 # ============================================================
 IDIOMAS = {
-    "es": {"nombre": "Español",   "traduccion": "español",   "gtts": "es"},
-    "en": {"nombre": "Inglés",    "traduccion": "inglés",    "gtts": "en"},
-    "fr": {"nombre": "Francés",   "traduccion": "francés",   "gtts": "fr"},
-    "de": {"nombre": "Alemán",    "traduccion": "alemán",    "gtts": "de"},
-    "it": {"nombre": "Italiano",  "traduccion": "italiano",  "gtts": "it"},
+    "es": {"nombre": "Español", "traduccion": "español", "gtts": "es"},
+    "en": {"nombre": "Inglés", "traduccion": "inglés", "gtts": "en"},
+    "fr": {"nombre": "Francés", "traduccion": "francés", "gtts": "fr"},
+    "de": {"nombre": "Alemán", "traduccion": "alemán", "gtts": "de"},
+    "it": {"nombre": "Italiano", "traduccion": "italiano", "gtts": "it"},
     "pt": {"nombre": "Portugués", "traduccion": "portugués", "gtts": "pt"},
 }
 
@@ -130,70 +129,56 @@ Describe:
 Responde SOLO con la descripción, sin introducciones.
 """
 
-MODELO_DEEPSEEK = "deepseek-chat"  # DeepSeek para imágenes
+MODELO_DEEPSEEK = "deepseek-chat"
 
 # ============================================================
 # FUNCIONES DE CONTROL DE CUOTA
 # ============================================================
 def verificar_limite_solicitudes(usuario="default") -> Tuple[bool, int]:
-    """Verifica si se puede hacer una solicitud respetando el rate limit."""
     ahora = datetime.now()
-    
     if usuario in ultima_solicitud:
         diferencia = (ahora - ultima_solicitud[usuario]).total_seconds()
         if diferencia < TIEMPO_MINIMO_ENTRE_SOLICITUDES:
             tiempo_espera = int(TIEMPO_MINIMO_ENTRE_SOLICITUDES - diferencia) + 1
             return False, tiempo_espera
-    
     ultima_solicitud[usuario] = ahora
     return True, 0
 
 def ejecutar_con_reintentos(func, *args, **kwargs):
-    """Ejecuta una función con reintentos en caso de error."""
     for intento in range(MAX_REINTENTOS):
         try:
-            # Verificar rate limit
             puede_proceder, tiempo_espera = verificar_limite_solicitudes()
             if not puede_proceder:
                 print(f"⏳ Rate limit activo. Esperando {tiempo_espera} segundos...")
                 time.sleep(tiempo_espera)
                 continue
-            
-            # Ejecutar la función
             return func(*args, **kwargs)
-            
         except Exception as e:
             error_str = str(e)
             if "429" in error_str or "rate_limit" in error_str.lower():
                 print(f"⚠️ Error de rate limit (intento {intento+1}/{MAX_REINTENTOS})")
                 tiempo_espera = 10 * (intento + 1)
-                
                 if intento < MAX_REINTENTOS - 1:
-                    print(f"⏳ Esperando {tiempo_espera} segundos antes de reintentar...")
+                    print(f"⏳ Esperando {tiempo_espera} segundos...")
                     time.sleep(tiempo_espera)
                 else:
                     raise Exception(f"Error persistente después de {MAX_REINTENTOS} intentos.")
             else:
                 raise e
-    
     raise Exception("Número máximo de reintentos alcanzado")
 
 # ============================================================
-# FUNCIONES PARA DEEPSEEK (IMÁGENES ESTÁTICAS)
+# FUNCIONES PARA DEEPSEEK
 # ============================================================
 def describir_imagen_deepseek(ruta_imagen: Path, nivel_complejidad: str = "estándar") -> str:
-    """Envía la imagen a DeepSeek y devuelve la audiodescripción."""
+    if not DEEPSEEK_API_KEY:
+        raise Exception("DEEPSEEK_API_KEY no configurada")
     
-    # Leer y codificar la imagen
     with open(ruta_imagen, "rb") as f:
         imagen_bytes = f.read()
     imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
     
-    prompt = (
-        PROMPT_AUDIODESCRIPCION_SIMPLIFICADA
-        if nivel_complejidad == "simplificada"
-        else PROMPT_AUDIODESCRIPCION_ESTANDAR
-    )
+    prompt = PROMPT_AUDIODESCRIPCION_SIMPLIFICADA if nivel_complejidad == "simplificada" else PROMPT_AUDIODESCRIPCION_ESTANDAR
     
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
@@ -206,16 +191,8 @@ def describir_imagen_deepseek(ruta_imagen: Path, nivel_complejidad: str = "está
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{imagen_base64}"
-                        }
-                    }
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{imagen_base64}"}}
                 ]
             }
         ],
@@ -232,7 +209,9 @@ def describir_imagen_deepseek(ruta_imagen: Path, nivel_complejidad: str = "está
     return ejecutar_con_reintentos(_describir)
 
 def traducir_texto_deepseek(texto: str, idioma_destino: str) -> str:
-    """Traduce un texto usando DeepSeek."""
+    if not DEEPSEEK_API_KEY:
+        raise Exception("DEEPSEEK_API_KEY no configurada")
+    
     prompt = PROMPT_TRADUCCION.format(idioma_destino=idioma_destino, texto=texto)
     
     headers = {
@@ -242,12 +221,7 @@ def traducir_texto_deepseek(texto: str, idioma_destino: str) -> str:
     
     payload = {
         "model": MODELO_DEEPSEEK,
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
+        "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 200,
         "temperature": 0.3
     }
@@ -261,38 +235,33 @@ def traducir_texto_deepseek(texto: str, idioma_destino: str) -> str:
     return ejecutar_con_reintentos(_traducir)
 
 # ============================================================
-# FUNCIONES PARA OLLAMA (CÁMARA EN VIVO)
+# FUNCIONES PARA OLLAMA (solo si está disponible)
 # ============================================================
 def verificar_ollama() -> bool:
-    """Verifica si Ollama está funcionando y tiene el modelo."""
     if not OLLAMA_DISPONIBLE:
         return False
-    
+    if EN_PRODUCCION:
+        # En producción, Ollama no estará disponible
+        return False
     try:
-        # Verificar si el modelo existe
         modelos = ollama.list()
         modelos_disponibles = [m['model'] for m in modelos['models']]
         if OLLAMA_MODELO not in modelos_disponibles:
-            print(f"⚠️ Modelo {OLLAMA_MODELO} no encontrado. Descargando...")
-            ollama.pull(OLLAMA_MODELO)
+            print(f"⚠️ Modelo {OLLAMA_MODELO} no encontrado.")
+            return False
         return True
     except Exception as e:
         print(f"❌ Error conectando con Ollama: {e}")
         return False
 
 def describir_fotograma_ollama(imagen_bytes: bytes, modo_detalle: bool = False) -> str:
-    """Analiza un fotograma de cámara en vivo con Ollama."""
-    
     if not verificar_ollama():
-        return "⚠️ Ollama no está disponible. Usando modo de respaldo."
+        return "⚠️ Ollama no está disponible. La cámara en vivo solo funciona en desarrollo local."
     
-    # Convertir imagen a base64
     imagen_base64 = base64.b64encode(imagen_bytes).decode('utf-8')
-    
     prompt = PROMPT_ANALISIS_DETALLADO_CAMARA if modo_detalle else PROMPT_CAMARA_EN_VIVO
     
     try:
-        # Usar Ollama con imagen
         response = ollama.chat(
             model=OLLAMA_MODELO,
             messages=[{
@@ -306,38 +275,25 @@ def describir_fotograma_ollama(imagen_bytes: bytes, modo_detalle: bool = False) 
                 'top_p': 0.9
             }
         )
-        
         descripcion = response['message']['content'].strip()
-        
-        # Limpiar la respuesta si es muy larga
         if len(descripcion) > 150:
             descripcion = descripcion[:150] + "..."
-            
         return descripcion
-        
     except Exception as e:
         print(f"❌ Error con Ollama: {e}")
         return f"Error al analizar: {str(e)}"
 
 def describir_fotograma_ollama_con_redimension(imagen_bytes: bytes, max_size: int = 640) -> str:
-    """Redimensiona la imagen antes de enviar a Ollama para mejor rendimiento."""
     try:
-        # Convertir a PIL Image
         imagen = Image.open(io.BytesIO(imagen_bytes))
-        
-        # Redimensionar manteniendo aspecto
         if max(imagen.size) > max_size:
             ratio = max_size / max(imagen.size)
             nuevo_tamano = (int(imagen.size[0] * ratio), int(imagen.size[1] * ratio))
             imagen = imagen.resize(nuevo_tamano, Image.Resampling.LANCZOS)
-        
-        # Convertir de vuelta a bytes
         buffer = io.BytesIO()
         imagen.save(buffer, format='JPEG', quality=85)
         imagen_bytes_redimensionada = buffer.getvalue()
-        
         return describir_fotograma_ollama(imagen_bytes_redimensionada)
-        
     except Exception as e:
         print(f"⚠️ Error en redimensionamiento: {e}")
         return describir_fotograma_ollama(imagen_bytes)
@@ -346,7 +302,6 @@ def describir_fotograma_ollama_con_redimension(imagen_bytes: bytes, max_size: in
 # FUNCIONES AUXILIARES
 # ============================================================
 def generar_audio(texto: str, ruta_salida: Path, idioma_gtts: str = "es") -> None:
-    """Convierte el texto en un archivo mp3 con gTTS."""
     try:
         gTTS(text=texto, lang=idioma_gtts, slow=False).save(str(ruta_salida))
     except Exception as e:
@@ -354,7 +309,6 @@ def generar_audio(texto: str, ruta_salida: Path, idioma_gtts: str = "es") -> Non
         raise
 
 def generar_imagen_ia(prompt: str, ruta_salida: Path) -> Path:
-    """Genera una imagen gratis con Pollinations.ai."""
     url = f"https://image.pollinations.ai/prompt/{quote(prompt)}"
     respuesta = requests.get(
         url, params={"width": 1024, "height": 1024, "nologo": "true"}, timeout=60
@@ -375,10 +329,6 @@ def procesar_todo_inclusivo(
     idiomas_elegidos: list[str],
     incluir_traduccion: bool,
 ) -> dict:
-    """
-    Flujo completo de procesamiento con DeepSeek para imágenes.
-    """
-    # 1) Imagen
     if origen == "subir":
         if archivo_subido is None or archivo_subido.filename == "":
             raise ValueError("No se ha subido ninguna imagen.")
@@ -392,13 +342,11 @@ def procesar_todo_inclusivo(
         ruta_imagen = GENERATED_DIR / f"{session_id}_generada.png"
         generar_imagen_ia(prompt_final, ruta_imagen)
 
-    # 2) Descripción base en español (con DeepSeek)
     descripcion_es = describir_imagen_deepseek(ruta_imagen, nivel_cognitivo)
     descripciones = {}
     if "es" in idiomas_elegidos:
         descripciones["es"] = descripcion_es
 
-    # 3) Traducciones (con DeepSeek)
     for codigo in idiomas_elegidos:
         if codigo == "es":
             continue
@@ -408,7 +356,6 @@ def procesar_todo_inclusivo(
         else:
             descripciones[codigo] = descripcion_es
 
-    # 4) Audio por idioma
     audios = {}
     for codigo in idiomas_elegidos:
         texto_a_leer = descripciones.get(codigo, descripcion_es)
@@ -429,14 +376,13 @@ def procesar_todo_inclusivo(
 # ============================================================
 @app.route("/", methods=["GET"])
 def index():
-    # Verificar estado de Ollama
     ollama_ok = verificar_ollama()
-    
     return render_template(
         "index.html",
         idiomas=IDIOMAS,
         api_configurada=bool(DEEPSEEK_API_KEY),
         ollama_disponible=ollama_ok,
+        en_produccion=EN_PRODUCCION,
         error=None,
         resultado=None,
         valores={"nivel": "estándar", "idiomas": ["es"], "origen": "generar",
@@ -458,6 +404,7 @@ def generar():
         return render_template(
             "index.html", idiomas=IDIOMAS, api_configurada=False,
             ollama_disponible=verificar_ollama(),
+            en_produccion=EN_PRODUCCION,
             error="❌ Falta configurar DEEPSEEK_API_KEY en el servidor.",
             resultado=None, valores=valores,
         )
@@ -481,6 +428,7 @@ def generar():
         return render_template(
             "index.html", idiomas=IDIOMAS, api_configurada=True,
             ollama_disponible=verificar_ollama(),
+            en_produccion=EN_PRODUCCION,
             error=None, resultado=resultado, valores=valores,
         )
     except Exception as exc:
@@ -493,6 +441,7 @@ def generar():
         return render_template(
             "index.html", idiomas=IDIOMAS, api_configurada=True,
             ollama_disponible=verificar_ollama(),
+            en_produccion=EN_PRODUCCION,
             error=error_amigable,
             resultado=None, valores=valores,
         )
@@ -500,14 +449,20 @@ def generar():
 @app.route('/analizar-camara', methods=['POST'])
 def analizar_camara():
     """Analiza un fotograma de cámara en tiempo real con Ollama."""
+    if EN_PRODUCCION:
+        return jsonify({
+            'error': 'no_disponible',
+            'mensaje': 'La funcionalidad de cámara en vivo no está disponible en producción. Usa la generación de imágenes estáticas.'
+        }), 503
+    
+    if not verificar_ollama():
+        return jsonify({
+            'error': 'ollama_no_disponible',
+            'mensaje': 'Ollama no está disponible. Asegúrate de que está instalado y ejecutándose localmente.',
+            'instrucciones': '1. Instala Ollama desde https://ollama.com\n2. Ejecuta: ollama pull llama3.2-vision\n3. Ejecuta: ollama serve'
+        }), 503
+        
     try:
-        if not verificar_ollama():
-            return jsonify({
-                'error': 'ollama_no_disponible',
-                'mensaje': 'Ollama no está disponible. Asegúrate de que está instalado y ejecutándose.',
-                'instrucciones': '1. Instala Ollama desde https://ollama.com\n2. Ejecuta: ollama pull llama3.2-vision\n3. Ejecuta: ollama serve'
-            }), 503
-            
         data = request.get_json()
         image_data = data.get('imagen', '')
         modo_detalle = data.get('detalle', False)
@@ -515,15 +470,13 @@ def analizar_camara():
         if not image_data:
             return jsonify({'error': 'No se recibió ninguna imagen'}), 400
         
-        # Decodificar base64
         if ',' in image_data:
-            header, encoded = image_data.split(',', 1)
+            _, encoded = image_data.split(',', 1)
         else:
             encoded = image_data
             
         image_bytes = base64.b64decode(encoded)
         
-        # Verificar rate limit
         ip_usuario = request.remote_addr or "default"
         puede_proceder, tiempo_espera = verificar_limite_solicitudes(ip_usuario)
         
@@ -534,7 +487,6 @@ def analizar_camara():
                 'tiempo_espera': tiempo_espera
             }), 429
         
-        # Analizar con Ollama
         descripcion = describir_fotograma_ollama_con_redimension(image_bytes, modo_detalle)
         
         return jsonify({
@@ -549,9 +501,7 @@ def analizar_camara():
 
 @app.route('/api/estado', methods=['GET'])
 def estado_sistema():
-    """Devuelve el estado actual del sistema."""
     ollama_ok = verificar_ollama()
-    
     return jsonify({
         'ollama': {
             'disponible': ollama_ok,
@@ -560,13 +510,14 @@ def estado_sistema():
         'deepseek': {
             'configurada': bool(DEEPSEEK_API_KEY)
         },
+        'produccion': EN_PRODUCCION,
         'rate_limit': {
             'minimo_segundos': TIEMPO_MINIMO_ENTRE_SOLICITUDES
         }
     })
 
 # ============================================================
-# HTML ACTUALIZADO (templates/index.html)
+# HTML (versión simplificada que maneja producción)
 # ============================================================
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -762,6 +713,14 @@ HTML_TEMPLATE = '''
             line-height: 1.5;
             color: #e2e8f0;
         }
+        .produccion-notice {
+            background: #f6ad55;
+            color: #2d3748;
+            padding: 10px;
+            border-radius: 8px;
+            margin: 10px 0;
+            text-align: center;
+        }
         
         .error-message {
             background: #fed7d7;
@@ -770,14 +729,6 @@ HTML_TEMPLATE = '''
             border-radius: 10px;
             margin: 15px 0;
             border-left: 4px solid #e53e3e;
-        }
-        .success-message {
-            background: #c6f6d5;
-            color: #276749;
-            padding: 15px;
-            border-radius: 10px;
-            margin: 15px 0;
-            border-left: 4px solid #48bb78;
         }
         
         @media (max-width: 768px) {
@@ -799,6 +750,12 @@ HTML_TEMPLATE = '''
             </span>
         </h1>
         <p class="subtitle">Generador de audiodescripciones inclusivas con DeepSeek y Llama 3.2 Vision</p>
+        
+        {% if en_produccion %}
+        <div class="produccion-notice">
+            ⚠️ Entorno de producción: La cámara en vivo está desactivada. Usa la generación de imágenes estáticas.
+        </div>
+        {% endif %}
         
         {% if error %}
         <div class="error-message">{{ error }}</div>
@@ -865,7 +822,7 @@ HTML_TEMPLATE = '''
                 <div class="camara-section">
                     <video id="video" autoplay playsinline></video>
                     <div class="camara-controls">
-                        <button id="btn-iniciar" class="btn" onclick="iniciarCamara()">📷 Iniciar</button>
+                        <button id="btn-iniciar" class="btn" onclick="iniciarCamara()" {% if en_produccion %}disabled{% endif %}>📷 Iniciar</button>
                         <button id="btn-analizar" class="btn btn-secondary" onclick="analizarFrame()" disabled>🔍 Analizar</button>
                         <button id="btn-detener" class="btn btn-danger" onclick="detenerCamara()" disabled>⏹️ Detener</button>
                     </div>
@@ -873,10 +830,10 @@ HTML_TEMPLATE = '''
                         <button class="btn" onclick="analizarFrameDetallado()" id="btn-detalle" disabled>🔬 Análisis detallado</button>
                     </div>
                     <div id="descripcion-camara">
-                        <span style="color: #a0aec0;">La descripción aparecerá aquí...</span>
+                        <span style="color: #a0aec0;">{% if en_produccion %}📌 No disponible en producción. Usa la generación de imágenes estáticas.{% else %}La descripción aparecerá aquí...{% endif %}</span>
                     </div>
                     <div id="estado-camara" style="color: #a0aec0; font-size: 0.9em; margin-top: 10px;">
-                        Estado: Esperando inicio...
+                        Estado: {% if en_produccion %}Desactivado en producción{% else %}Esperando inicio...{% endif %}
                     </div>
                 </div>
             </div>
@@ -916,6 +873,7 @@ HTML_TEMPLATE = '''
         let contexto = canvas.getContext('2d');
         let analizando = false;
         let intervaloAnalisis = null;
+        const enProduccion = {{ 'true' if en_produccion else 'false' }};
         
         function toggleOrigen() {
             const origen = document.getElementById('origen').value;
@@ -924,6 +882,11 @@ HTML_TEMPLATE = '''
         }
         
         async function iniciarCamara() {
+            if (enProduccion) {
+                alert('La cámara en vivo no está disponible en producción.');
+                return;
+            }
+            
             try {
                 const video = document.getElementById('video');
                 stream = await navigator.mediaDevices.getUserMedia({ 
@@ -942,7 +905,6 @@ HTML_TEMPLATE = '''
                 document.getElementById('btn-detalle').disabled = false;
                 document.getElementById('estado-camara').textContent = '✅ Cámara activa';
                 
-                // Analizar automáticamente cada 3 segundos
                 intervaloAnalisis = setInterval(analizarFrame, 3000);
                 
             } catch (error) {
@@ -979,7 +941,7 @@ HTML_TEMPLATE = '''
         }
         
         async function analizarFrame() {
-            if (analizando) return;
+            if (analizando || enProduccion) return;
             analizando = true;
             
             try {
@@ -1017,7 +979,7 @@ HTML_TEMPLATE = '''
         }
         
         async function analizarFrameDetallado() {
-            if (analizando) return;
+            if (analizando || enProduccion) return;
             analizando = true;
             
             try {
@@ -1048,7 +1010,6 @@ HTML_TEMPLATE = '''
             }
         }
         
-        // Inicializar estado de origen
         toggleOrigen();
     </script>
 </body>
@@ -1069,34 +1030,33 @@ if __name__ == '__main__':
     print(f"📷 Modelo para cámara en vivo: {OLLAMA_MODELO} (Llama 3.2 Vision)")
     print(f"🖼️ Modelo para imágenes estáticas: DeepSeek")
     print(f"⏱️  Tiempo mínimo entre solicitudes: {TIEMPO_MINIMO_ENTRE_SOLICITUDES}s")
+    print(f"🌐 Entorno: {'Producción' if EN_PRODUCCION else 'Desarrollo'}")
     print("")
     
-    # Verificar DeepSeek
     if DEEPSEEK_API_KEY:
         print(f"✅ DeepSeek API: Configurada")
     else:
         print(f"❌ DeepSeek API: No configurada (falta DEEPSEEK_API_KEY)")
     
-    # Verificar Ollama
-    if OLLAMA_DISPONIBLE:
-        try:
-            modelos = ollama.list()
-            print(f"✅ Ollama: Disponible")
-            modelos_disponibles = [m['model'] for m in modelos['models']]
-            if OLLAMA_MODELO in modelos_disponibles:
-                print(f"✅ Modelo {OLLAMA_MODELO}: Instalado")
-            else:
-                print(f"⚠️ Modelo {OLLAMA_MODELO}: No instalado")
-                print(f"   Ejecuta: ollama pull {OLLAMA_MODELO}")
-        except Exception as e:
-            print(f"❌ Error conectando con Ollama: {e}")
-            print(f"   Asegúrate de ejecutar: ollama serve")
+    if EN_PRODUCCION:
+        print(f"ℹ️ Modo producción: Cámara en vivo desactivada")
     else:
-        print(f"❌ Ollama no instalado. Instala desde: https://ollama.com")
+        if OLLAMA_DISPONIBLE:
+            try:
+                modelos = ollama.list()
+                print(f"✅ Ollama: Disponible")
+                modelos_disponibles = [m['model'] for m in modelos['models']]
+                if OLLAMA_MODELO in modelos_disponibles:
+                    print(f"✅ Modelo {OLLAMA_MODELO}: Instalado")
+                else:
+                    print(f"⚠️ Modelo {OLLAMA_MODELO}: No instalado")
+                    print(f"   Ejecuta: ollama pull {OLLAMA_MODELO}")
+            except Exception as e:
+                print(f"❌ Error conectando con Ollama: {e}")
+                print(f"   Asegúrate de ejecutar: ollama serve")
+        else:
+            print(f"❌ Ollama no instalado. Instala desde: https://ollama.com")
     
     print("")
-    print(f"🌐 Servidor iniciado en: http://localhost:5000")
-    
-    # Para producción en Render, usar el puerto de la variable de entorno
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=not EN_PRODUCCION)

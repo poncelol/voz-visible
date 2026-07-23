@@ -7,9 +7,7 @@ services:
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
-      # Verificar que gunicorn se instaló
-      pip show gunicorn || pip install gunicorn==22.0.0
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 180 --workers 1 --log-level debug
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 180 --workers 1 --log-level info
     healthCheckPath: /
     envVars:
       - key: DEEPSEEK_API_KEY
@@ -18,3 +16,5 @@ services:
         generateValue: true
       - key: PYTHON_VERSION
         value: 3.11.8
+      - key: RENDER
+        value: true
