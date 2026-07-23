@@ -5,6 +5,7 @@
 
 import os
 import re
+import time
 import uuid
 import base64
 import io
@@ -15,7 +16,7 @@ from typing import Dict, Optional, List
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, render_template, request, url_for, jsonify
+from flask import Flask, render_template, request, url_for, jsonify, session
 from gtts import gTTS
 from PIL import Image, ImageStat
 from deep_translator import GoogleTranslator
@@ -31,6 +32,13 @@ app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 app.secret_key = os.environ.get("SECRET_KEY", "tu-clave-secreta-aqui")
 
 EN_PRODUCCION = os.environ.get('RENDER') == 'true'
+
+# ============================================================
+# CÁMARA EN VIVO: LÍMITE DE TIEMPO
+# ============================================================
+# Corta las llamadas a Groq pasados estos segundos desde el primer
+# fotograma de la sesión, aunque el navegador siga insistiendo.
+CAMARA_DURACION_MAX_SEG = 20
 
 # ============================================================
 # CONFIGURACIÓN GROQ (100% GRATUITO)
@@ -413,10 +421,39 @@ def estado_camara():
         'version': '2.0.0'
     })
 
+@app.route('/api/camara/iniciar', methods=['POST'])
+def iniciar_camara():
+    """
+    Marca el inicio de una sesión de cámara en vivo. El frontend debe llamar
+    a esto justo cuando el usuario pulsa 'Iniciar cámara', para que el
+    contador de 20 segundos empiece en ese momento (y no arrastre tiempo
+    de una sesión anterior).
+    """
+    session['camara_inicio'] = time.time()
+    return jsonify({'ok': True, 'duracion_max_seg': CAMARA_DURACION_MAX_SEG})
+
 @app.route('/api/camara/stream', methods=['POST'])
 def procesar_stream_camara():
-    """Procesa stream de cámara en vivo."""
+    """Procesa stream de cámara en vivo, con corte automático a los 20s."""
     try:
+        # Si no hay inicio registrado (p. ej. el frontend no llamó a /iniciar),
+        # lo fijamos ahora mismo con este primer fotograma.
+        inicio = session.get('camara_inicio')
+        if inicio is None:
+            inicio = time.time()
+            session['camara_inicio'] = inicio
+
+        transcurrido = time.time() - inicio
+
+        if transcurrido >= CAMARA_DURACION_MAX_SEG:
+            # No llamamos a Groq: cortamos aquí para no seguir gastando tokens.
+            print(f"⏹️ Límite de {CAMARA_DURACION_MAX_SEG}s alcanzado, se ignora el fotograma")
+            return jsonify({
+                'limite_alcanzado': True,
+                'mensaje': f'Sesión de cámara detenida tras {CAMARA_DURACION_MAX_SEG} segundos.',
+                'duracion_max_seg': CAMARA_DURACION_MAX_SEG
+            }), 200
+
         data = request.get_json()
         if not data or 'imagen' not in data:
             return jsonify({'error': 'No se recibió imagen'}), 400
@@ -456,10 +493,14 @@ def procesar_stream_camara():
 
         es_groq = GROQ_API_KEY and "píxeles" not in descripcion_es.lower() and "composición" not in descripcion_es.lower()
 
+        # Segundos que quedan antes del corte, útil para que el frontend lo muestre
+        segundos_restantes = max(0, round(CAMARA_DURACION_MAX_SEG - transcurrido, 1))
+
         return jsonify({
             'descripcion': descripcion,
             'audio': audio_base64,
             'timestamp': datetime.now().isoformat(),
+            'segundos_restantes': segundos_restantes,
             'modelo': 'Groq Vision' if es_groq else 'Técnico (fallback)',
             'es_groq': es_groq
         })
@@ -467,6 +508,13 @@ def procesar_stream_camara():
     except Exception as e:
         print(f"❌ Error en stream: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/camara/detener', methods=['POST'])
+def detener_camara():
+    """Limpia el contador de sesión para que la próxima vez que se inicie la
+    cámara vuelva a tener sus 20 segundos completos."""
+    session.pop('camara_inicio', None)
+    return jsonify({'ok': True})
 
 @app.route('/api/estado', methods=['GET'])
 def estado_sistema():
