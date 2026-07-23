@@ -4,6 +4,7 @@
 # ============================================================
 
 import os
+import re
 import uuid
 import base64
 import io
@@ -121,7 +122,13 @@ def describir_con_groq(imagen_bytes: bytes) -> str:
                     ]
                 }
             ],
-            "max_tokens": 150,
+            # qwen/qwen3.6-27b es un modelo "razonador": por defecto piensa en voz alta
+            # (en inglés) antes de responder. Sin esto, ese pensamiento se cuela como
+            # respuesta si se corta antes de terminar. "hidden" = solo devuelve la
+            # respuesta final; "none" = ni siquiera razona, más rápido para esta tarea.
+            "reasoning_format": "hidden",
+            "reasoning_effort": "none",
+            "max_tokens": 400,   # margen de sobra por si acaso
             "temperature": 0.7
         }
 
@@ -139,6 +146,13 @@ def describir_con_groq(imagen_bytes: bytes) -> str:
         if response.status_code == 200:
             data = response.json()
             descripcion = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+            # Red de seguridad: por si algún resto de razonamiento se cuela en el
+            # contenido (con o sin cierre de etiqueta), lo eliminamos.
+            if descripcion:
+                descripcion = re.sub(r"<think>.*?</think>", "", descripcion, flags=re.DOTALL)
+                descripcion = re.sub(r"<think>.*", "", descripcion, flags=re.DOTALL)
+                descripcion = descripcion.strip()
 
             if descripcion and len(descripcion) > 10:
                 print(f"✅ Groq: {descripcion}")
