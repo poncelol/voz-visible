@@ -604,7 +604,7 @@
     }
 
     /* ============================================================
-       CÁMARA EN VIVO (NUEVO)
+       CÁMARA EN VIVO
        ============================================================ */
     .camara-section {
         margin-top: 1.5rem;
@@ -695,6 +695,12 @@
     .descripcion-camara p {
         margin: 0;
         font-size: 1rem;
+    }
+    .camara-timer {
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        margin-left: 0.5rem;
     }
 </style>
 </head>
@@ -844,32 +850,33 @@
           {% endif %}
 
           <!-- ============================================================
-          CÁMARA EN VIVO (NUEVO)
+          CÁMARA EN VIVO
           ============================================================ -->
           <div class="camara-section">
             <h3>📷 Cámara en vivo</h3>
-            <p class="hint">Usa tu cámara para describir lo que ves en tiempo real.</p>
-            
+            <p class="hint">Usa tu cámara para describir lo que ves en tiempo real. Se detiene sola a los 20 segundos.</p>
+
             <div class="video-container">
               <video id="videoCamara" autoplay playsinline></video>
               <canvas id="canvasCamara"></canvas>
             </div>
-            
+
             <div class="camara-controls">
               <button id="btnIniciarCamara" class="btn btn-success">▶️ Iniciar cámara</button>
               <button id="btnCapturarCamara" class="btn btn-primary" disabled>📸 Capturar y describir</button>
               <button id="btnDetenerCamara" class="btn btn-danger" disabled>⏹️ Detener</button>
             </div>
-            
+
             <div style="margin-top:0.5rem;">
               <span id="statusCamara" class="status-badge status-inactive">⚪ Inactiva</span>
-              <span id="modeloCamara" style="margin-left:0.5rem;font-size:0.85rem;color:var(--text-muted);">Modelo: Hugging Face</span>
+              <span id="modeloCamara" style="margin-left:0.5rem;font-size:0.85rem;color:var(--text-muted);">Modelo: Groq Vision</span>
+              <span id="timerCamara" class="camara-timer"></span>
             </div>
-            
+
             <div id="descripcionCamara" class="descripcion-camara">
               <p style="color:var(--text-muted);"><em>La descripción aparecerá aquí...</em></p>
             </div>
-            
+
             <div id="audioCamaraContainer" style="display:none;margin-top:0.5rem;">
               <audio id="audioCamara" controls style="width:100%;">
                 Tu navegador no soporta audio.
@@ -896,7 +903,7 @@
         <div class="step">
           <p class="num">02</p>
           <h3>IA la describe</h3>
-          <p>Hugging Face BLIP escribe una descripción objetiva del contenido real de la imagen.</p>
+          <p>Groq Vision escribe una descripción objetiva del contenido real de la imagen.</p>
         </div>
         <div class="step">
           <p class="num">03</p>
@@ -936,7 +943,7 @@
 
 <footer>
   <div class="wrap">
-    <p>Voz Visible — construida con Flask, Hugging Face BLIP (descripción), gTTS (voz) y Pollinations.ai (imagen). Los archivos generados se guardan en <code>static/generated/</code> en el servidor.</p>
+    <p>Voz Visible — construida con Flask, Groq Vision (descripción), gTTS (voz), deep-translator (traducción) y Pollinations.ai (imagen). Los archivos generados se guardan en <code>static/generated/</code> en el servidor.</p>
   </div>
 </footer>
 
@@ -947,21 +954,21 @@
 document.addEventListener('DOMContentLoaded', function() {
     let fontSize = 16;
     const root = document.documentElement;
-    
+
     document.getElementById('btn-font-mas').addEventListener('click', function() {
         if (fontSize < 24) {
             fontSize += 2;
             root.style.fontSize = fontSize + 'px';
         }
     });
-    
+
     document.getElementById('btn-font-menos').addEventListener('click', function() {
         if (fontSize > 12) {
             fontSize -= 2;
             root.style.fontSize = fontSize + 'px';
         }
     });
-    
+
     document.getElementById('btn-contraste').addEventListener('click', function() {
         const pressed = this.getAttribute('aria-pressed') === 'true';
         this.setAttribute('aria-pressed', !pressed);
@@ -978,7 +985,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const inputOrigen = document.getElementById('input-origen');
     const bloqueGenerar = document.getElementById('bloque-generar');
     const bloqueSubir = document.getElementById('bloque-subir');
-    
+
     function setOrigen(origen) {
         inputOrigen.value = origen;
         btnGenerar.setAttribute('aria-pressed', origen === 'generar');
@@ -986,15 +993,17 @@ document.addEventListener('DOMContentLoaded', function() {
         bloqueGenerar.style.display = origen === 'generar' ? 'block' : 'none';
         bloqueSubir.style.display = origen === 'subir' ? 'block' : 'none';
     }
-    
+
     btnGenerar.addEventListener('click', function() { setOrigen('generar'); });
     btnSubir.addEventListener('click', function() { setOrigen('subir'); });
 });
 
 // ============================================================
-// CÁMARA EN VIVO
+// CÁMARA EN VIVO (corregido: sin "undefined", con corte a los 20s)
 // ============================================================
 document.addEventListener('DOMContentLoaded', function() {
+    const DURACION_MAX_SEG = 20; // debe coincidir con CAMARA_DURACION_MAX_SEG en app.py
+
     const video = document.getElementById('videoCamara');
     const canvas = document.getElementById('canvasCamara');
     const context = canvas.getContext('2d');
@@ -1002,50 +1011,70 @@ document.addEventListener('DOMContentLoaded', function() {
     const btnCapturar = document.getElementById('btnCapturarCamara');
     const btnDetener = document.getElementById('btnDetenerCamara');
     const statusCamara = document.getElementById('statusCamara');
+    const timerCamara = document.getElementById('timerCamara');
     const descripcionCamara = document.getElementById('descripcionCamara');
     const audioContainer = document.getElementById('audioCamaraContainer');
     const audioPlayer = document.getElementById('audioCamara');
     const modeloCamara = document.getElementById('modeloCamara');
-    
+
     let stream = null;
     let isRunning = false;
     let capturing = false;
     let intervaloCaptura = null;
-    
-    // Verificar estado inicial
-    async function verificarEstado() {
-        try {
-            const response = await fetch('/api/camara/estado');
-            const data = await response.json();
-            if (data.activo) {
-                console.log('✅ Servicio de cámara disponible');
-            }
-        } catch (error) {
-            console.warn('⚠️ Servicio de cámara no disponible');
-        }
-    }
-    verificarEstado();
-    
+    let intervaloCronometro = null;
+    let segundosTranscurridos = 0;
+
     function actualizarUI() {
         btnIniciar.disabled = isRunning;
         btnCapturar.disabled = !isRunning;
         btnDetener.disabled = !isRunning;
     }
-    
+
     function actualizarStatus(texto, clase) {
         statusCamara.textContent = texto;
         statusCamara.className = 'status-badge ' + clase;
     }
-    
-    function mostrarDescripcion(texto, esIA) {
+
+    function mostrarDescripcion(texto, esGroq) {
         descripcionCamara.innerHTML = `<p>${texto}</p>`;
-        if (esIA) {
-            modeloCamara.textContent = '🧠 IA: ' + (esIA === true ? 'Hugging Face' : 'Técnico');
+        if (typeof esGroq === 'boolean') {
+            modeloCamara.textContent = '🧠 Modelo: ' + (esGroq ? 'Groq Vision' : 'Técnico (fallback)');
         }
     }
-    
+
+    async function detenerCamara(mensajeFinal) {
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            video.srcObject = null;
+        }
+        if (intervaloCaptura) { clearInterval(intervaloCaptura); intervaloCaptura = null; }
+        if (intervaloCronometro) { clearInterval(intervaloCronometro); intervaloCronometro = null; }
+
+        isRunning = false;
+        capturing = false;
+        segundosTranscurridos = 0;
+        timerCamara.textContent = '';
+        actualizarUI();
+        actualizarStatus('⚪ Inactiva', 'status-inactive');
+
+        // Avisa al servidor para que reinicie el contador de 20s la próxima vez
+        try {
+            await fetch('/api/camara/detener', { method: 'POST' });
+        } catch (e) {
+            console.warn('No se pudo avisar al servidor de la parada:', e);
+        }
+
+        if (mensajeFinal) {
+            mostrarDescripcion(mensajeFinal);
+        }
+        console.log('⏹️ Cámara detenida');
+    }
+
     btnIniciar.addEventListener('click', async function() {
         try {
+            // Avisa al servidor: aquí empieza la cuenta atrás de 20s
+            await fetch('/api/camara/iniciar', { method: 'POST' });
+
             stream = await navigator.mediaDevices.getUserMedia({
                 video: {
                     facingMode: 'environment',
@@ -1054,15 +1083,35 @@ document.addEventListener('DOMContentLoaded', function() {
                 },
                 audio: false
             });
-            
+
             video.srcObject = stream;
             await video.play();
-            
+
             isRunning = true;
+            segundosTranscurridos = 0;
             actualizarUI();
             actualizarStatus('🟢 Activa', 'status-active');
             console.log('✅ Cámara iniciada');
-            
+
+            // Cronómetro visual: cuenta atrás hasta el corte automático
+            timerCamara.textContent = `(se detiene en ${DURACION_MAX_SEG}s)`;
+            intervaloCronometro = setInterval(() => {
+                segundosTranscurridos += 1;
+                const restante = DURACION_MAX_SEG - segundosTranscurridos;
+                if (restante > 0) {
+                    timerCamara.textContent = `(se detiene en ${restante}s)`;
+                } else {
+                    timerCamara.textContent = '';
+                }
+            }, 1000);
+
+            // Detiene la cámara sola a los 20 segundos
+            setTimeout(() => {
+                if (isRunning) {
+                    detenerCamara('Sesión de cámara finalizada tras 20 segundos.');
+                }
+            }, DURACION_MAX_SEG * 1000);
+
             // Captura automática cada 4 segundos
             if (intervaloCaptura) clearInterval(intervaloCaptura);
             intervaloCaptura = setInterval(() => {
@@ -1070,80 +1119,56 @@ document.addEventListener('DOMContentLoaded', function() {
                     capturarYDescribir();
                 }
             }, 4000);
-            
+
         } catch (error) {
             console.error('❌ Error al iniciar cámara:', error);
             alert('No se pudo acceder a la cámara. Verifica los permisos.');
-            iniciarSimulacion();
         }
     });
-    
-    function iniciarSimulacion() {
-        actualizarStatus('🟡 Simulación', 'status-simulacion');
-        isRunning = true;
-        btnCapturar.disabled = false;
-        
-        if (intervaloCaptura) clearInterval(intervaloCaptura);
-        intervaloCaptura = setInterval(() => {
-            const descripciones = [
-                "La cámara muestra una escena con buena iluminación y colores cálidos.",
-                "Se observa un ambiente tranquilo con elementos visuales diversos.",
-                "La imagen presenta un contraste interesante entre luces y sombras.",
-                "Se percibe una composición equilibrada con varios elementos."
-            ];
-            const desc = descripciones[Math.floor(Math.random() * descripciones.length)];
-            mostrarDescripcion(desc, false);
-        }, 5000);
-    }
-    
+
     btnDetener.addEventListener('click', function() {
-        if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-            video.srcObject = null;
-        }
-        if (intervaloCaptura) {
-            clearInterval(intervaloCaptura);
-            intervaloCaptura = null;
-        }
-        isRunning = false;
-        capturing = false;
-        actualizarUI();
-        actualizarStatus('⚪ Inactiva', 'status-inactive');
-        console.log('⏹️ Cámara detenida');
+        detenerCamara();
     });
-    
+
     btnCapturar.addEventListener('click', capturarYDescribir);
-    
+
     async function capturarYDescribir() {
         if (!isRunning) {
             alert('Primero inicia la cámara');
             return;
         }
         if (capturing) return;
-        
+
         capturing = true;
         btnCapturar.disabled = true;
-        
+
         try {
             canvas.width = video.videoWidth || 640;
             canvas.height = video.videoHeight || 480;
             context.drawImage(video, 0, 0, canvas.width, canvas.height);
-            
+
             const imageData = canvas.toDataURL('image/jpeg', 0.8);
-            
+
             const response = await fetch('/api/camara/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ imagen: imageData })
             });
-            
+
             if (!response.ok) throw new Error(`Error ${response.status}`);
-            
+
             const data = await response.json();
+
+            // El servidor ya cortó el límite de 20s: no hay 'descripcion' en esta respuesta.
+            if (data.limite_alcanzado) {
+                detenerCamara(data.mensaje || 'Sesión de cámara finalizada.');
+                return;
+            }
+
             if (data.error) throw new Error(data.error);
-            
-            mostrarDescripcion(data.descripcion, data.es_ia);
-            
+
+            mostrarDescripcion(data.descripcion, data.es_groq);
+
             if (data.audio) {
                 audioContainer.style.display = 'block';
                 const audioBlob = base64ToBlob(data.audio, 'audio/mp3');
@@ -1151,16 +1176,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 audioPlayer.src = audioUrl;
                 audioPlayer.play().catch(() => {});
             }
-            
+
         } catch (error) {
             console.error('❌ Error:', error);
-            mostrarDescripcion('❌ Error: ' + error.message, false);
+            mostrarDescripcion('❌ Error: ' + error.message);
         } finally {
             capturing = false;
-            btnCapturar.disabled = false;
+            if (isRunning) btnCapturar.disabled = false;
         }
     }
-    
+
     function base64ToBlob(base64, mimeType) {
         const byteCharacters = atob(base64);
         const byteArrays = [];
